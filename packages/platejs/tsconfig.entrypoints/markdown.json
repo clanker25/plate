@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "composite": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "incremental": true,
+    "noEmit": true,
+    "outDir": "../.turbo/entrypoint-types/markdown",
+    "rootDir": "../src",
+    "sourceMap": false,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/markdown.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/markdown/**/*"],
+  "references": [
+    {
+      "path": "./core.json"
+    },
+    {
+      "path": "./standard-list.json"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "incremental": true,
+    "noEmit": true,
+    "outDir": "../.turbo/entrypoint-types/excalidraw",
+    "rootDir": "../src",
+    "sourceMap": true,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/excalidraw.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/excalidraw/react/**/*",
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/excalidraw/**/*"],
+  "references": [
+    {
+      "path": "./core.json"
+    }
+  ]
+}

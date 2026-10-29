@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "incremental": true,
+    "noEmit": true,
+    "outDir": "../.turbo/entrypoint-types/suggestion-react",
+    "rootDir": "../src",
+    "sourceMap": true,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/suggestion-react.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/react/features/suggestion/**/*"],
+  "references": [
+    {
+      "path": "./authored.json"
+    },
+    {
+      "path": "./core.json"
+    },
+    {
+      "path": "./react-core.json"
+    },
+    {
+      "path": "./suggestion.json"
+    }
+  ]
+}

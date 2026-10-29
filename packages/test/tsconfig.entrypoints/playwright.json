@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "incremental": true,
+    "noEmit": true,
+    "outDir": "../.turbo/entrypoint-types/playwright",
+    "rootDir": "../src",
+    "sourceMap": false,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/playwright.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/playwright/**/*"],
+  "references": [
+    {
+      "path": "../../platejs/tsconfig.entrypoints/root.json"
+    },
+    {
+      "path": "../../platejs/tsconfig.entrypoints/testing.json"
+    },
+    {
+      "path": "./browser.json"
+    },
+    {
+      "path": "./proof.json"
+    },
+    {
+      "path": "./root.json"
+    }
+  ]
+}

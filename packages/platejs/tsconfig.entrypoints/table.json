@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": false,
+    "incremental": true,
+    "noEmit": false,
+    "outDir": "../.turbo/entrypoint-types/table",
+    "rootDir": "../src",
+    "sourceMap": true,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/table.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/features/table/**/*"],
+  "references": [
+    {
+      "path": "./core.json"
+    },
+    {
+      "path": "./proxies.json"
+    }
+  ]
+}

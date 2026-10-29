@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "incremental": true,
+    "noEmit": true,
+    "outDir": "../.turbo/entrypoint-types/html",
+    "rootDir": "../src",
+    "sourceMap": true,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/html.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/html/server/**/*",
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/html/**/*"],
+  "references": [
+    {
+      "path": "./core.json"
+    }
+  ]
+}

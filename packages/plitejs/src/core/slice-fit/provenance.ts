@@ -1,0 +1,403 @@
+import type { Descendant, Path, Point } from '../../interfaces';
+import { ElementApi, NodeApi } from '../../interfaces';
+import type { DocumentIndex } from '../change/document-index';
+import type { Relocation } from '../change/lineage';
+import type { RootChange } from '../change/root-change';
+
+/**
+ * Where a moved payload's node came from: `payload` is the node as the
+ * payload holds it, without its children, and `at` its source node's open
+ * token in `document`, the document the move started from.
+ */
+export type LandingSource = Readonly<{
+  at: number;
+  document: DocumentIndex;
+  kind: 'element' | 'text';
+  payload: string;
+}>;
+
+export const payloadKeyOf = (node: object) =>
+  JSON.stringify(
+    Object.fromEntries(
+      Object.entries(node)
+        .filter(([key]) => key !== 'children')
+        .sort(([left], [right]) => left.localeCompare(right))
+    )
+  );
+
+let landingSources: readonly LandingSource[] | null = null;
+
+/** Whether the slice being fitted lands a move that named its sources. */
+export const isLandingMove = () => !!landingSources?.length;
+
+/** Fit `run`'s slices as the landing of a move whose texts came from `sources`. */
+export const withLandingSources = <T>(
+  sources: readonly LandingSource[] | null,
+  run: () => T
+): T => {
+  const previous = landingSources;
+
+  landingSources = sources;
+  try {
+    return run();
+  } finally {
+    landingSources = previous;
+  }
+};
+
+/**
+ * The relocations a fitted move's raw landing carries: each node the change
+ * inserted, in order, that is the next payload node of its kind as the
+ * payload holds it continues that node's source. Texts and elements match
+ * apart, so an element the fit reshaped leaves the texts traced. A node the
+ * fit made, such as a split tail or a wrapper, matches none and has no former
+ * place.
+ */
+export const landedRelocations = (
+  root: string,
+  after: DocumentIndex,
+  change: RootChange
+): readonly Relocation[] => {
+  const sources = landingSources;
+
+  if (!sources?.length) return [];
+
+  const queues = {
+    element: sources.filter(({ kind }) => kind === 'element'),
+    text: sources.filter(({ kind }) => kind === 'text'),
+  };
+  const next = { element: 0, text: 0 };
+  const pending = () =>
+    next.element < queues.element.length || next.text < queues.text.length;
+  const relocations: Relocation[] = [];
+  let at = 0;
+
+  for (let pair = 0; pair < change.sections.length && pending(); pair += 2) {
+    const length = change.sections[pair];
+    const inserted = change.sections[pair + 1];
+
+    if (inserted < 0) {
+      at += length;
+      continue;
+    }
+
+    const end = at + inserted;
+    let position = at;
+
+    while (position < end && pending()) {
+      const entry = after.nodeStartingAt(position);
+
+      if (entry?.from !== position) {
+        const inside = after.openContextAt(position).at(-1);
+
+        position =
+          inside?.kind === 'text'
+            ? Math.max(position + 1, inside.to)
+            : position + 1;
+        continue;
+      }
+
+      const kind = entry.kind === 'text' ? 'text' : 'element';
+      const source = queues[kind][next[kind]];
+
+      if (source && payloadKeyOf(after.node(entry.path)) === source.payload) {
+        relocations.push({
+          at: position,
+          length: 1,
+          root,
+          source: { at: source.at, document: source.document },
+        });
+        next[kind] += 1;
+      }
+      position = kind === 'text' ? entry.to : position + 1;
+    }
+    at = end;
+  }
+
+  return relocations;
+};
+
+export type ClosedFitOriginTracker = Readonly<{
+  originOf: (node: Descendant) => Descendant | null;
+  record: (output: Descendant, source: Descendant) => void;
+}>;
+
+/** Caller paths of the node at `path`; empty for a node the fit created. */
+export type FitInputPaths = (path: Path) => readonly Path[];
+
+export type RootFitPathProvenance = Readonly<{
+  /** Caller paths of a path in the latest grammar output. */
+  inputPaths: FitInputPaths;
+  mapPath: (
+    path: Path,
+    source: DocumentIndex,
+    association: -1 | 1,
+    deletion?: 'drop' | 'nearest'
+  ) => Path | null;
+  mapPoint: (
+    point: Point,
+    source: DocumentIndex,
+    raw: DocumentIndex,
+    association: -1 | 1,
+    deletion?: 'drop' | 'nearest'
+  ) => Point | null;
+  /** Starts one grammar stage over the latest grammar output. */
+  stage: (source: readonly Descendant[]) => Readonly<{
+    /** Moves this provenance onto the stage's output. */
+    advance: (fitted: readonly Descendant[]) => void;
+    /** Caller paths of a node the stage reads or emits. */
+    inputsOf: (node: Descendant) => readonly Path[];
+    origins: ClosedFitOriginTracker;
+  }>;
+}>;
+
+const pathKey = (path: readonly number[]) => path.join('/');
+
+export const visitDescendantPaths = (
+  children: readonly Descendant[],
+  visit: (node: Descendant, path: Path) => void,
+  parentPath: Path = []
+) => {
+  children.forEach((node, index) => {
+    const path = [...parentPath, index];
+
+    visit(node, path);
+    if (ElementApi.isElement(node)) {
+      visitDescendantPaths(node.children, visit, path);
+    }
+  });
+};
+
+const createClosedFitOriginTracker = (): ClosedFitOriginTracker => {
+  const origins = new WeakMap<object, Descendant>();
+  const originOf = (node: Descendant) => origins.get(node) ?? null;
+
+  return {
+    originOf,
+    record(output, source) {
+      origins.set(output, originOf(source) ?? source);
+    },
+  };
+};
+
+/**
+ * Tracks only caller paths retained by closed fitting. Wrappers/defaults have
+ * no caller path, while cloned fitted nodes explicitly retain their origin.
+ * This is selection and repair-report provenance, not another document diff.
+ */
+export const createRootFitPathProvenance = (
+  source: readonly Descendant[]
+): RootFitPathProvenance => {
+  let mappedPaths = new Map<string, Path>();
+
+  visitDescendantPaths(source, (_node, path) => {
+    mappedPaths.set(pathKey(path), path);
+  });
+
+  const invert = (paths: ReadonlyMap<string, Path>) => {
+    const inverse = new Map<string, Path>();
+
+    visitDescendantPaths(source, (_node, sourcePath) => {
+      const mapped = paths.get(pathKey(sourcePath));
+
+      if (mapped) inverse.set(pathKey(mapped), sourcePath);
+    });
+
+    return inverse;
+  };
+  const inputPathsOf = (paths: ReadonlyMap<string, Path>): FitInputPaths => {
+    let inverse: ReadonlyMap<string, Path> | undefined;
+
+    return (path) => {
+      inverse ??= invert(paths);
+      const sourcePath = inverse.get(pathKey(path));
+
+      return sourcePath ? [sourcePath] : [];
+    };
+  };
+  let latestInputPaths = inputPathsOf(mappedPaths);
+
+  const nearestMappedPath = (
+    path: Path,
+    document: DocumentIndex,
+    association: -1 | 1
+  ): Path | null => {
+    const target = document.nodeRange(path).from;
+    const nearest: {
+      next: Readonly<{ path: Path; position: number }> | null;
+      previous: Readonly<{ path: Path; position: number }> | null;
+    } = { next: null, previous: null };
+
+    visitDescendantPaths(source, (_node, sourcePath) => {
+      const mapped = mappedPaths.get(pathKey(sourcePath));
+
+      if (!mapped) return;
+      const range = document.nodeRange(sourcePath);
+
+      if (
+        range.to <= target &&
+        (!nearest.previous || range.to > nearest.previous.position)
+      ) {
+        nearest.previous = { path: mapped, position: range.to };
+      }
+      if (
+        range.from >= target &&
+        (!nearest.next || range.from < nearest.next.position)
+      ) {
+        nearest.next = { path: mapped, position: range.from };
+      }
+    });
+
+    return association === -1
+      ? (nearest.previous?.path ?? nearest.next?.path ?? null)
+      : (nearest.next?.path ?? nearest.previous?.path ?? null);
+  };
+
+  return {
+    inputPaths: (path) => latestInputPaths(path),
+    mapPath(path, sourceDocument, association, deletion) {
+      const mapped = mappedPaths.get(pathKey(path));
+
+      if (mapped) return [...mapped];
+      if (deletion === 'drop') return null;
+
+      return nearestMappedPath(path, sourceDocument, association);
+    },
+    mapPoint(point, sourceDocument, rawDocument, association, deletion) {
+      const mapped = mappedPaths.get(pathKey(point.path));
+
+      if (mapped) {
+        const node = rawDocument.node(mapped);
+
+        return NodeApi.isText(node)
+          ? { offset: Math.min(point.offset, node.text.length), path: mapped }
+          : null;
+      }
+      if (deletion === 'drop') return null;
+
+      const sourcePosition = sourceDocument.positionAt(point);
+      const candidates: {
+        next: Readonly<{ path: Path; position: number }> | null;
+        previous: Readonly<{ path: Path; position: number }> | null;
+      } = { next: null, previous: null };
+
+      visitDescendantPaths(source, (node, sourcePath) => {
+        if (!NodeApi.isText(node)) return;
+        const rawPath = mappedPaths.get(pathKey(sourcePath));
+
+        if (!rawPath) return;
+        const start = sourceDocument.positionAt({
+          offset: 0,
+          path: sourcePath,
+        });
+        const end = sourceDocument.positionAt({
+          offset: node.text.length,
+          path: sourcePath,
+        });
+
+        if (
+          end <= sourcePosition &&
+          (!candidates.previous || end > candidates.previous.position)
+        ) {
+          candidates.previous = { path: rawPath, position: end };
+        }
+        if (
+          start >= sourcePosition &&
+          (!candidates.next || start < candidates.next.position)
+        ) {
+          candidates.next = { path: rawPath, position: start };
+        }
+      });
+
+      const nearest =
+        association === -1
+          ? (candidates.previous ?? candidates.next)
+          : (candidates.next ?? candidates.previous);
+
+      if (!nearest) return null;
+      const node = rawDocument.node(nearest.path);
+
+      return NodeApi.isText(node)
+        ? {
+            offset: nearest === candidates.previous ? node.text.length : 0,
+            path: [...nearest.path],
+          }
+        : null;
+    },
+    stage(stageSource) {
+      const origins = createClosedFitOriginTracker();
+      const stageInputPaths = inputPathsOf(mappedPaths);
+      let stagePaths: WeakMap<object, Path> | undefined;
+      const stagePathOf = (node: Descendant) => {
+        if (!stagePaths) {
+          const paths = new WeakMap<object, Path>();
+
+          visitDescendantPaths(stageSource, (stageNode, path) => {
+            paths.set(stageNode, path);
+          });
+          stagePaths = paths;
+        }
+
+        return stagePaths.get(node);
+      };
+
+      return {
+        advance(fitted) {
+          const fittedPaths = new Map<string, Path>();
+
+          visitDescendantPaths(fitted, (node, path) => {
+            const origin = origins.originOf(node);
+            const sourcePath = origin ? stagePathOf(origin) : undefined;
+
+            if (sourcePath) fittedPaths.set(pathKey(sourcePath), path);
+          });
+
+          const nextPaths = new Map<string, Path>();
+
+          for (const [original, currentPath] of mappedPaths) {
+            const nextPath = fittedPaths.get(pathKey(currentPath));
+
+            if (nextPath) nextPaths.set(original, nextPath);
+          }
+
+          mappedPaths = nextPaths;
+          latestInputPaths = inputPathsOf(mappedPaths);
+        },
+        inputsOf(node) {
+          const path = stagePathOf(origins.originOf(node) ?? node);
+
+          return path ? stageInputPaths(path) : [];
+        },
+        origins,
+      };
+    },
+  };
+};
+
+export const getTextEdge = (
+  node: Descendant,
+  path: Path,
+  edge: 'end' | 'start'
+): Point | null => {
+  if (NodeApi.isText(node)) {
+    return {
+      offset: edge === 'start' ? 0 : node.text.length,
+      path,
+    };
+  }
+
+  const index = edge === 'start' ? 0 : node.children.length - 1;
+  const child = node.children[index];
+
+  return child ? getTextEdge(child, [...path, index], edge) : null;
+};
+
+export const pointsEqual = (left: Point, right: Point) =>
+  left.offset === right.offset &&
+  left.path.length === right.path.length &&
+  left.path.every((part, index) => part === right.path[index]);
+
+export const isEmptyDescendant = (node: Descendant): boolean =>
+  NodeApi.isText(node)
+    ? node.text.length === 0
+    : node.children.every(isEmptyDescendant);

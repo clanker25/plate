@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "incremental": true,
+    "noEmit": false,
+    "outDir": "../.turbo/entrypoint-types/static",
+    "rootDir": "../src",
+    "sourceMap": false,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/static.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/static/**/*"],
+  "references": [
+    {
+      "path": "../../plitejs/tsconfig.entrypoints/core.json"
+    },
+    {
+      "path": "../../plitejs/tsconfig.entrypoints/react.json"
+    },
+    {
+      "path": "./authored.json"
+    },
+    {
+      "path": "./core.json"
+    },
+    {
+      "path": "./proxies.json"
+    }
+  ]
+}

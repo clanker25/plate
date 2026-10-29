@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "incremental": false,
+    "noEmit": false,
+    "outDir": "../.turbo/entrypoint-types/callout-react",
+    "rootDir": "../src",
+    "sourceMap": true,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/callout-react.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/react/features/callout/**/*"],
+  "references": [
+    {
+      "path": "./callout.json"
+    },
+    {
+      "path": "./react-core.json"
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+---
+title: 日期
+docs:
+  - route: /docs/components/date
+    title: 日期元素
+---
+
+<ComponentPreview name="date-demo" />
+
+<PackageInfo>
+
+## 功能特性
+
+- 使用内联日期元素在文本中插入和显示日期
+- 可通过日历界面轻松选择和修改这些日期
+
+</PackageInfo>
+
+## 套件使用
+
+<Steps>
+
+### 安装
+
+最快捷添加日期功能的方式是使用 `DateKit`，它包含了预配置的 `DatePlugin` 和 [Plate UI](/docs/installation/plate-ui) 组件。
+
+<ComponentSource name="date" />
+
+- [`DateElement`](/docs/components/date): 渲染内联日期元素
+
+### 添加套件
+
+将套件添加到你的插件中：
+
+```tsx
+import { createEditor } from 'platejs/react';
+import { DateKit } from '@/components/editor/date';
+
+const editor = createEditor({
+  plugins: [
+    // ...其他插件
+    ...DateKit,
+  ],
+});
+```
+
+</Steps>
+
+## 手动配置
+
+<Steps>
+
+### 安装
+
+```bash
+npm install platejs
+```
+
+### 添加插件
+
+在创建编辑器时将 `DatePlugin` 包含到 Plate 插件数组中。
+
+```tsx
+import { DatePlugin } from 'platejs/date/react';
+import { createEditor } from 'platejs/react';
+
+const editor = createEditor({
+  plugins: [
+    // ...其他插件
+    DatePlugin,
+  ],
+});
+```
+
+### 配置插件
+
+使用自定义组件配置插件来渲染日期元素。
+
+```tsx
+import { DatePlugin } from 'platejs/date/react';
+import { createEditor } from 'platejs/react';
+import { DateElement } from '@/components/editor/date';
+
+const editor = createEditor({
+  plugins: [
+    // ...其他插件
+    DatePlugin.configure({ component: DateElement }),
+  ],
+});
+```
+
+- `component`: 指定 [`DateElement`](/docs/components/date) 来渲染内联日期元素
+
+### 插入工具栏按钮
+
+菜单项直接调用已安装的日期功能：
+
+```tsx
+import { BaseDatePlugin } from 'platejs/date';
+
+const insertItem = {
+  focusEditor: true,
+  icon: <CalendarIcon />,
+  label: '日期',
+  value: 'date',
+  onSelect: () => {
+    const date = editor.plugin(BaseDatePlugin);
+
+    if (!date.installed || editor.read.view.isReadOnly()) return;
+
+    date.update.insert({}, { select: true });
+  },
+};
+```
+
+</Steps>
+
+## 日期值
+
+日期元素只保存一个 `value` 字符串：`YYYY-MM-DD` 格式的日期，或作者输入的文本，例如 `sometime next week`。
+
+| 输入 | 保存的值 |
+|------|----------|
+| 不传 `value` | 本地时区的今天，格式为 `YYYY-MM-DD` |
+| `Date` 对象 | `formatDateValue(value)`；无效的 `Date` 不插入任何内容 |
+| 字符串 | 去除首尾空格后的字符串；空白字符串不插入任何内容 |
+
+`parseCanonicalDateValue(value)` 对有效的 `YYYY-MM-DD` 日期返回 `Date`，对作者文本返回 `undefined`。传给 `insert` 的字符串按原样保存，要保存日期请传入 `Date`。
+
+v54 迁移和 Markdown 读取器会把 `toDateString()` 文本（例如 `Mon Mar 23 2026`）在星期与日期相符时读作 `2026-03-23`，其他文本按原样保留。
+
+每个复制的组件自行生成标签。`DateElement` 对相邻日期显示 `Today`、`Yesterday` 或 `Tomorrow`，其余显示完整日期，例如 `March 23, 2026`。它在渲染时读取时钟，因此服务端 HTML 使用服务器的日期。`DateElementStatic` 始终显示完整日期，因此导出内容不会过期。两者都使用美式英语；修改复制代码中的 `dateFormat` 和词语即可更换语言。
+
+## Markdown
+
+日期值序列化为带 `value` 属性的自闭合标签，其他作者文本序列化为 `text` 属性，读取器按原样保留。子文本无法保证原样读回，因为 Markdown 可能改写它，例如遇到空行或表情短代码时。
+
+```md
+Date: <date value="2026-03-23" />
+Date: <date text="sometime next week" />
+```
+
+读取器也接受子文本，例如 `<date>sometime next week</date>`。
+
+## 插件
+
+### `DatePlugin`
+
+用于向文档添加日期元素的插件。
+
+## 转换操作
+
+### `editor.plugin(BaseDatePlugin).update.insert`
+
+<API name="editor.plugin(BaseDatePlugin).update.insert">
+<APIParameters>
+  <APIItem name="input" type="object" optional>
+    <APISubList>
+      <APISubListItem parent="input" name="value" type="Date | string" optional>
+        要插入的日期。`Date` 保存为本地日期 `YYYY-MM-DD`，字符串去除首尾空格后按原样保存。默认使用今天
+      </APISubListItem>
+    </APISubList>
+  </APIItem>
+  <APIItem name="options" type="object" optional>
+    标准节点插入选项，例如 `at` 和 `select`
+  </APIItem>
+</APIParameters>
+</API>

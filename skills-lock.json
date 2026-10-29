@@ -1,0 +1,62 @@
+{
+  "version": 2,
+  "skills": {
+    "chips": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/chips/SKILL.md",
+      "computedHash": "8afdd375f47e2ca93b95c88931776e480dc36c4faeb98c17e2edf10c815b2851"
+    },
+    "cleanup": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/cleanup/SKILL.md",
+      "computedHash": "f4f5b655132dbcf2ca2361877ce849e1ffe70ed87dff9fa23c09c58aa4ecac61"
+    },
+    "plan-page": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/plan-page/SKILL.md",
+      "computedHash": "7e40b10085b30c6c4f1802df637a934e1efc50bd0102665312e5c14eaadf5694"
+    },
+    "redo": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/redo/SKILL.md",
+      "computedHash": "d4a13f213fc569ba248556b3a31ae2e461e609867582cfaca071edd16d06fa4d"
+    },
+    "shadcn": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "computedHash": "c1a68ee06a668aced9ab2b5fbdea5f989864123794eb2e056b339a072dbb7f10"
+    },
+    "tanstack-virtual": {
+      "source": "tanstack-skills/tanstack-skills",
+      "sourceType": "github",
+      "computedHash": "987d0fcffeac700cea1303a13a9cecd8a4583985dd675f97ebbca27bfa592b47"
+    },
+    "test-audit": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/test-audit/SKILL.md",
+      "computedHash": "6097fc0e3a7adb2de0a6e0be5008fe4afb6b2c4ebc5c29507f58499904112a04"
+    },
+    "vercel-react-best-practices": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "computedHash": "3219a1944e404ffc14d1d9d6aef6dd2e3855b81387ee0a044ccbfe14d34c2357"
+    },
+    "video-transcripts": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/video-transcripts/SKILL.md",
+      "computedHash": "156e8c855d2146504a7bdb66ff7a14012167fd9c19c5a4d486437851d061ca87"
+    },
+    "walkthrough": {
+      "source": "udecode/dotai",
+      "sourceType": "github",
+      "skillPath": "skills/walkthrough/SKILL.md",
+      "computedHash": "693e514613dbd1aae21ea48ca430962c93e70adc14d10c0a4f70dc2dc76c8a3a"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+---
+id: 2026-09-07-media-upload-lifetime
+date: 2026-09-07
+status: draft
+kind: fix
+summary: 'Keep media upload tasks active across draft view remounts'
+change: { 'type': 'source', 'date': '2026-09-07', 'commits': [] }
+release: { 'status': 'unresolved' }
+diagnostics: []
+---
+
+<!-- entry: {"id":"2026-09-07-media-keep-uploads-active-across-65d719f5","kind":"fix","migrationNotes":[]} -->
+
+- **`media`**, **`media-upload`**: Admit picker, paste, and drop batches through one draft-slot protocol. Upload tasks survive view remounts, cancel when their keyed draft loses authority, expose local progress and retry state, and report each failure once through `MediaKit`.

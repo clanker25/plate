@@ -1,0 +1,69 @@
+---
+title: "Contributing"
+description: "Report Plite bugs and request features with reproducible evidence."
+---
+
+Plite work happens in the Plate repository. You contribute by filing an issue with a reproduction, and the team writes every fix. Tests, plans and research live in a private team repository, and the team closes pull requests from outside the team.
+
+## On this page
+
+- [What Fits](#what-fits)
+- [Bug Reports](#bug-reports)
+- [Feature Requests](#feature-requests)
+- [Plite Proof Lanes](#plite-proof-lanes)
+- [Release Authority](#release-authority)
+
+## What fits
+
+Good Plite reports cover one of these surfaces:
+
+- editor runtime correctness in `plitejs`;
+- DOM, clipboard, hotkey, or browser bridge behavior in `plitejs/dom`;
+- React editor behavior in `plitejs/react`;
+- history behavior in `plitejs/history`;
+- Yjs adapter behavior in `plitejs/yjs`;
+- layout behavior in `plitejs/pagination`;
+- docs and examples under `/docs/plite/*` and `/examples/plite/*`.
+
+## Bug reports
+
+Open a [bug report](https://github.com/udecode/plate/issues/new/choose). Editor bugs need more than a screenshot.
+
+Include:
+
+- the exact docs page, example route, package, or API involved;
+- expected behavior;
+- actual behavior;
+- browser, OS, and input method;
+- a minimal value or code path;
+- a short recording when the bug is visual;
+- focused reproduction steps;
+- whether the bug affects model state, rendered DOM, native selection, focus, paste, undo/redo, or follow-up typing.
+
+The team fixes bugs with a public reproduction, such as a sandbox link or a minimal repository, first. For selection, paste, IME, void, hidden DOM, or huge-document behavior, include browser-visible evidence.
+
+## Feature requests
+
+Open a [feature request](https://github.com/udecode/plate/issues/new/choose) with the use case, the package it belongs to, and what you tried with the current API. For a larger idea, start a [GitHub Discussion](https://github.com/udecode/plate/discussions) first.
+
+## Plite proof lanes
+
+The team proves each fix with these lanes. They run the team's private tests, so they do not run in a public clone.
+
+| Change                                                 | Lane                                                             |
+| ------------------------------------------------------ | ---------------------------------------------------------------- |
+| Core runtime, transforms, changes, nodes, locations    | `pnpm --filter plitejs test`                                     |
+| React editor behavior                                  | `pnpm --filter plitejs test:partition:react`                     |
+| History                                                | `pnpm --filter plitejs test:partition:history`                   |
+| DOM bridge or browser harness                          | `pnpm --filter @platejs/test test`                               |
+| Yjs adapter                                            | `pnpm --filter plitejs test:partition:yjs`                       |
+| Pagination                                             | `pnpm --filter plitejs test:partition:pagination`                |
+| Docs source                                            | `pnpm --filter www check:docs`                                   |
+| Example browser behavior                               | `pnpm --filter plite test:plite-browser:chromium <file-or-grep>` |
+| Full browser matrix                                    | `pnpm check:plite:browser-matrix`                                |
+
+Browser proof hits `/examples/plite/*`, not docs pages. Docs pages prove reading and navigation. Example routes prove editor behavior.
+
+## Release authority
+
+Public release, package promotion, and npm publishing decisions belong to maintainers.
