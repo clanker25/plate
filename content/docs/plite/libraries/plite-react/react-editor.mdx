@@ -1,0 +1,334 @@
+---
+title: "React Editor"
+description: "Use React, DOM, focus, selection, clipboard, and DataTransfer host APIs on a React editor."
+---
+
+`createEditor` creates an editor with React, DOM, and clipboard host APIs
+installed. Hooks such as `useEditor` create the same editor shape.
+
+## Minimal usage
+
+```typescript
+import { createEditor } from "plitejs/react";
+
+const editor = createEditor();
+
+// Once <EditorRoot editor={editor}> shows an Editable, this focuses the view
+// that holds the caret, or the only view.
+editor.api.dom.focus();
+```
+
+## On this page
+
+- [Views](react-editor#views)
+- [Checks](react-editor#checks)
+- [Focus And Selection](react-editor#focus-and-selection)
+- [DOM Scope](react-editor#dom-scope)
+- [DOM Translation](react-editor#dom-translation)
+- [DOM Environment](react-editor#dom-environment)
+- [DataTransfer](react-editor#datatransfer)
+
+## Views
+
+Inside one `EditorRoot`, the `<Editable />`s without a `root` share the
+`EditorRoot`'s view, which shows the `root` it names or the primary document,
+and each `<Editable root>` is a view of its own. Every `editor.api.dom` call
+runs in one view, picked by the editor you call it on:
+
+- A view's own editor, such as the one `useEditorContext()` returns inside the
+  view, runs every call in that view, even one given another view's DOM node
+  or event, so pass it only its own view's DOM. A lookup of the DOM of a node,
+  point or range in a root the view does not show returns `null`.
+- An editor from `useRootEditor(root)` runs in its own `EditorRoot`'s view of
+  `root`.
+- The editor `createEditor` returns runs in a view that shows the root the
+  call is about: its target's root, else the caret's root, else the primary
+  document. When the caret was placed in that root from an `EditorRoot`,
+  through one of its views or its `useRootEditor` editor, only that
+  `EditorRoot`'s views of the root count, even after the editor `createEditor`
+  returns moves the caret within the root. Of the views that count, it takes
+  the only one, else the focused one, also when that view sits in an iframe or
+  a shadow root.
+- The other editors run a call given a DOM node or an event in the view that
+  renders it, when that view belongs to the editor. `resolveRange` and
+  `assertRange` run on the editor you call instead, so resolve a DOM range in
+  one view with that view's own editor.
+
+When no view is picked, a lookup of DOM, such as `root()`, `editable()` or
+`resolveDOMNode`, returns `null`, its `assert*` twin throws and `focus()`
+does nothing. Calls that need no view still answer: `resolvePath`
+and `assertPath` read the model, `findKey` and `visibleRect` read what you
+pass, and `scroll()` returns a scroll container registered for the editor you
+call. While the `EditorRoot` that placed the caret shows no view of the caret's
+root, for example while React hides it with `Activity`, the editor
+`createEditor` returns picks no view of that root. When one view has several
+Editables, its lookups of DOM use the one that holds focus, and find none while
+none does.
+
+To act on one of several views, call the DOM API on that view's editor:
+
+```tsx
+import { Editable, EditorRoot, useEditorContext } from "plitejs/react";
+
+function FocusThisView() {
+  const view = useEditorContext();
+
+  return <button onClick={() => view.api.dom.focus()}>Focus</button>;
+}
+
+<>
+  <EditorRoot editor={editor}>
+    <Editable />
+    <FocusThisView />
+  </EditorRoot>
+  <EditorRoot editor={editor}>
+    <Editable />
+    <FocusThisView />
+  </EditorRoot>
+</>
+```
+
+## Checks
+
+#### `editor.api.react.isComposing(): boolean`
+
+Check if the user is currently composing inside the editor.
+
+#### `editor.api.react.isFocused(): boolean`
+
+Check if the editor is focused.
+
+#### `editor.api.react.isReadOnly(): boolean`
+
+Check if the editor is in read-only mode.
+
+#### `editor.api.dom.isComposing(): boolean`
+
+Check if the user is currently composing inside the editor from the DOM bridge.
+
+#### `editor.api.dom.isFocused(): boolean`
+
+Check if the DOM editor is focused.
+
+#### `editor.api.dom.isReadOnly(): boolean`
+
+Check if the DOM editor is in read-only mode.
+
+## Focus and selection
+
+#### `editor.api.dom.blur(): void`
+
+Blur the editor.
+
+#### `editor.api.dom.focus(options?: { retries?: number }): void`
+
+Focus the editor's [view](react-editor#views). Does nothing when no view is
+picked.
+
+#### `editor.api.dom.deselect(): void`
+
+Clear the native DOM selection and the Plite selection.
+
+## DOM scope
+
+#### `editor.api.dom.root(): HTMLElement | null`
+
+Return the root element of the editor's [view](react-editor#views).
+
+#### `editor.api.dom.editable(root?: RootKey): HTMLElement | null`
+
+Return the editable element of the editor's [view](react-editor#views), or of
+its view of `root` when given.
+
+#### `editor.api.dom.scroll(): HTMLElement | null`
+
+Return the element used as the editor scroll container. It falls back to the
+editor root when no custom scroll element is registered.
+
+## DOM translation
+
+#### `editor.api.dom.findKey(node: Descendant): Key`
+
+Find a key for a Plite node.
+
+#### `editor.api.dom.resolvePath(node: Node): Path | null`
+
+Resolve the current path of a Plite node. Returns `null` when the node is not
+mounted in the current editor value.
+
+#### `editor.api.dom.assertPath(node: Node): Path`
+
+Assert the current path of a Plite node.
+
+#### `editor.api.dom.hasDOMNode(target: DOMNode, options?: { editable?: boolean }): boolean`
+
+Check if a DOM node is within the editor.
+
+#### `editor.api.dom.hasEditableTarget(target: EventTarget | null): target is DOMNode`
+
+Check if the target is editable and in the editor.
+
+#### `editor.api.dom.hasSelectableTarget(target: EventTarget | null): boolean`
+
+Check if the target can be selected by the editor.
+
+#### `editor.api.dom.hasTarget(target: EventTarget | null): target is DOMNode`
+
+Check if the target is in the editor.
+
+#### `editor.api.dom.assertDOMNode(node: Node): HTMLElement`
+
+Assert the native DOM element for a Plite node.
+
+#### `editor.api.dom.resolveDOMNode(nodeOrKey: Node | NodeKey): HTMLElement | null`
+
+Resolve the native DOM element for a Plite node or its live `NodeKey`. Returns
+`null` when the node is not mounted or the key is removed or belongs to another
+editor.
+
+#### `editor.api.dom.assertDOMPoint(point: Point): DOMPoint`
+
+Assert a native DOM selection point from a Plite point. Throws where
+`resolveDOMPoint` returns `null`.
+
+#### `editor.api.dom.resolveDOMPoint(point: Point): DOMPoint | null`
+
+Resolve a native DOM selection point from a Plite point. Returns `null` when the
+Plite point is not currently mappable. It also returns `null` while the page's
+text differs from the editor's, such as right after an update or during IME
+composition, so resolve again after the page paints.
+
+#### `editor.api.dom.assertDOMRange(range: Range): DOMRange`
+
+Assert a native DOM range from a Plite range. Throws where `resolveDOMRange`
+returns `null`.
+
+#### `editor.api.dom.resolveDOMRange(range: Range): DOMRange | null`
+
+Resolve a native DOM range from a Plite range. Returns `null` when the Plite
+range is not currently mappable. It also returns `null` while the page's
+text differs from the editor's, such as right after an update or during IME
+composition, so resolve again after the page paints.
+
+#### `editor.api.dom.resolveRangeRect(range: Range): DOMRect | null`
+
+Resolve the bounding rect for a Plite range. Returns `null` when the range is
+not currently mappable to mounted DOM.
+
+#### `editor.api.dom.resolveVisualPoint(point: Point, options: { affinity?: SelectionAssociation; direction: 'left' | 'right'; unit: 'character' | 'word' }): DOMVisualPoint | null`
+
+Resolve one physical horizontal caret step through the mounted browser layout.
+The result carries both the next model point and its affinity. Returns `null`
+when the point is not mounted or the browser cannot resolve the step.
+
+#### `editor.api.dom.scrollIntoView(target: Path | Point | Range | DOMRange, options?: ScrollIntoViewOptions): () => void`
+
+Schedule scrolling to a Plite path, point, range, or native DOM range in the
+mounted view. Range targets use their bounding rectangle, so caret scrolling
+follows the actual position inside a text leaf. The returned function cancels
+pending work for this request; return it from an effect to cancel scrolling
+when its target changes or the component unmounts.
+
+#### `editor.api.dom.assertNode(domNode: DOMNode): Node`
+
+Assert a Plite node from a native DOM node.
+
+#### `editor.api.dom.resolveNode(domNode: DOMNode): Node | null`
+
+Resolve a Plite node from a native DOM node. Returns `null` when the DOM node is
+not owned by the editor.
+
+#### `editor.api.dom.assertEventRange(event: unknown): Range`
+
+Assert the target range from a DOM event.
+
+#### `editor.api.dom.resolveEventRange(event: unknown): Range | null`
+
+Resolve the target range from a DOM event. Returns `null` when the event target
+cannot be mapped into the editor.
+
+#### `editor.api.dom.assertPoint(domPoint: DOMPoint, options: { exactMatch: boolean; searchDirection?: 'backward' | 'forward' }): Point`
+
+Assert a Plite point from a DOM point.
+
+#### `editor.api.dom.resolvePoint(domPoint: DOMPoint, options: { exactMatch: boolean; searchDirection?: 'backward' | 'forward' }): Point | null`
+
+Resolve a Plite point from a DOM point. Returns `null` when the DOM point is not
+currently mappable.
+
+#### `editor.api.dom.assertRange(domRange: DOMRange | DOMStaticRange | DOMSelection, options: { exactMatch: boolean }): Range`
+
+Assert a Plite range from a DOM range or selection.
+
+#### `editor.api.dom.resolveRange(domRange: DOMRange | DOMStaticRange | DOMSelection, options: { exactMatch: boolean }): Range | null`
+
+Resolve a Plite range from a DOM range or selection. Returns `null` when the DOM
+range is not currently mappable.
+
+## DOM environment
+
+#### `editor.api.dom.assertDocumentOrShadowRoot(): Document | ShadowRoot`
+
+Return the document or shadow root that holds the editor's view. Throws where
+`resolveDocumentOrShadowRoot` returns `null`.
+
+#### `editor.api.dom.resolveDocumentOrShadowRoot(): Document | ShadowRoot | null`
+
+Resolve the document or shadow root that holds the editor's
+[view](react-editor#views). Returns `null` when no view is picked.
+
+#### `editor.api.dom.getWindow(): Window`
+
+Return the window that owns the editor.
+
+#### `editor.api.dom.hasRange(range: Range): boolean`
+
+Check whether a Plite range can currently be mapped to DOM.
+
+#### `editor.api.dom.isTargetInsideNonReadonlyVoid(target: EventTarget | null): boolean`
+
+Check whether a DOM event target is inside a non-read-only void element.
+
+## DataTransfer
+
+#### `editor.api.dom.clipboard.insertData(data: DataTransfer): boolean | undefined`
+
+Insert data from a `DataTransfer` into the editor. Returns `true` when Plite or
+a plugin inserts content, `false` when no format applies, and `undefined` when
+the editor refuses the update. The DOM adapter dispatches `domCommands.insertData`;
+typed plugin command interceptors can claim the payload, transform it, or return
+`next()` to continue. The accepted command spec commits through one transaction.
+
+The default command path tries an internal Plite slice for the editor's
+configured `clipboardFormatKey`, then registered DataTransfer formats, then
+plain text. A refused format ends the paste; no later format runs.
+
+#### `editor.api.dom.clipboard.insertFragmentData(data: DataTransfer): boolean | undefined`
+
+Insert Plite fragment data from a `DataTransfer`. Returns `true` when fragment
+content was inserted and `undefined` when the editor refuses the update.
+
+#### `editor.api.dom.clipboard.insertTextData(data: DataTransfer): boolean | undefined`
+
+Insert plain text data from a `DataTransfer`. Returns `true` when text content
+was inserted and `undefined` when the editor refuses the update.
+
+#### `editor.api.dom.clipboard.readSlice(data: Pick<DataTransfer, 'getData' | 'types'>): ClipboardSliceRead`
+
+Read one exact Plite slice. The result distinguishes absent data, invalid MIME
+or HTML data, and a valid `ContentSlice`.
+
+#### `editor.api.dom.clipboard.writeSelection(data: Pick<DataTransfer, 'getData' | 'setData'>): void`
+
+Write the current selection to a `DataTransfer`.
+
+#### `editor.api.dom.clipboard.writeSlice(data: Pick<DataTransfer, 'getData' | 'setData'>, payload: ClipboardSliceWrite): void`
+
+Write one exact `ContentSlice` plus optional browser MIME representations.
+
+Plite writes plain text, HTML, and an internal Plite fragment payload. The
+fragment payload uses `application/${clipboardFormatKey}` and the HTML fallback
+is tagged with the same key, so differently configured editors do not blindly
+import each other's internal JSON.
+Use [Clipboard And Paste](../../concepts/17-clipboard-and-paste) for the full
+copy, paste, drop, and fitted slice replacement pipeline.

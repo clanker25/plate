@@ -1,0 +1,94 @@
+'use client';
+
+import { BaseParagraphPlugin } from 'platejs';
+import { AIChatPlugin } from 'platejs/ai/react';
+import {
+  useEditorSelector,
+  usePluginStore,
+  type RenderNodeWrapperProps,
+  type WrapRootProps,
+} from 'platejs/react';
+
+import {
+  AIChatEditor,
+  AILoadingBar,
+  AIMenu,
+} from '@/registry/components/editor/ai-menu';
+
+import { AIChatTransportPlugin, useEditorChat } from './use-chat';
+
+function AIInlinePreview({
+  children,
+  element,
+}: RenderNodeWrapperProps<typeof AIChatTransportPlugin>) {
+  const replacesEmptyParagraph = useEditorSelector(
+    (editor) =>
+      element.type === editor.plugin(BaseParagraphPlugin).schema.type &&
+      editor.read.nodes.isEmpty(element)
+  );
+  return (
+    <div data-editor-ai-preview-wrapper="">
+      <div hidden={replacesEmptyParagraph}>{children}</div>
+      <div contentEditable={false} data-editor-ai-preview="">
+        <AIChatEditor inline />
+      </div>
+    </div>
+  );
+}
+
+function AIIntegration({ children, editableRef }: WrapRootProps) {
+  useEditorChat(editableRef);
+
+  return children;
+}
+
+export const AIKit = [
+  AIChatTransportPlugin.extend(({ api, store }) => ({
+    render: {
+      useViewElementAttributes() {
+        const key = usePluginStore(AIChatPlugin, (state) =>
+          state.mode === 'insert' && state.previewValue.length > 0
+            ? state._blockKey
+            : null
+        );
+
+        return key
+          ? [{ key, attributes: { 'data-editor-ai-preview-anchor': '' } }]
+          : [];
+      },
+    },
+    slots: {
+      wrapNode: {
+        component: AIInlinePreview,
+        match: ({ editor, element }) => {
+          const state = store.get();
+          return (
+            state.mode === 'insert' &&
+            state.previewValue.length > 0 &&
+            editor.key(element) === state._blockKey
+          );
+        },
+      },
+      afterContainer: AILoadingBar,
+      afterEditable: AIMenu,
+      wrapRoot: AIIntegration,
+    },
+    shortcuts: {
+      show: {
+        keys: 'mod+j',
+        handler: ({ editor }) => {
+          editor.plugin(AIChatPlugin).api.show();
+        },
+      },
+      stop: {
+        keys: 'escape',
+        handler: () => {
+          const status = store.get().chat?.status;
+          if (status !== 'streaming' && status !== 'submitted') return false;
+          api.stop();
+          return true;
+        },
+      },
+    },
+  })),
+];

@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "incremental": false,
+    "noEmit": true,
+    "outDir": "../.turbo/entrypoint-types/pagination-react",
+    "rootDir": "../src",
+    "sourceMap": false,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/pagination-react.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/pagination/react/**/*"],
+  "references": [
+    {
+      "path": "../../plitejs/tsconfig.entrypoints/pagination.json"
+    },
+    {
+      "path": "./proxies.json"
+    },
+    {
+      "path": "./react-core.json"
+    }
+  ]
+}

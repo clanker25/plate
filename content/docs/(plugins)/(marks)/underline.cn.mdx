@@ -1,0 +1,133 @@
+---
+title: 下划线
+description: 为行内文本添加下划线。
+docs:
+  - route: /docs/basic-marks
+    title: 基础标记
+  - route: /docs/components/mark-toolbar-button
+    title: 标记工具栏按钮
+  - route: /docs/plugin-shortcuts
+    title: 插件快捷键
+---
+
+下划线为选中文本应用 `underline` 叶子标记。`UnderlinePlugin` 负责标记键、快捷键、HTML 解析、渲染标签和切换转换。
+
+<ComponentPreview name="basic-marks-demo" />
+
+<PackageInfo>
+
+## 功能特性
+
+- 布尔类型的 `underline` 叶子属性，由 `PLUGINS.underline` 能力负责。
+- 默认快捷键 `⌘U` / `Ctrl+U`。
+- 从 `u` 和下划线文本装饰反序列化 HTML。
+- 默认渲染为 `<u>`。
+- 通过 `UnderlineRules` 提供可选的 Markdown 风格输入规则。
+- 通过 `MarkToolbarButton` 支持工具栏。
+
+</PackageInfo>
+
+## 套件使用
+
+<Steps>
+
+### 添加基础标记
+
+`BasicMarksKit` 包含 `UnderlinePlugin`、下划线输入规则，以及使用该插件描述符的标准工具栏按钮。
+
+<ComponentSource name="basic-marks" />
+
+```tsx
+import { createEditor } from 'platejs/react';
+
+import { BasicMarksKit } from '@/components/editor/basic-marks';
+
+export const editor = createEditor({
+  plugins: [...BasicMarksKit],
+});
+```
+
+### 添加工具栏按钮
+
+将 `UnderlinePlugin` 传给 `MarkToolbarButton`，按钮就会使用配置的标记键。
+
+```tsx
+import { UnderlineIcon } from 'lucide-react';
+import { UnderlinePlugin } from 'platejs/react';
+
+import { MarkToolbarButton } from '@/components/editor/mark-toolbar-button';
+
+export function UnderlineToolbarButton() {
+  return (
+    <MarkToolbarButton plugin={UnderlinePlugin} tooltip="Underline (⌘+U)">
+      <UnderlineIcon />
+    </MarkToolbarButton>
+  );
+}
+```
+
+</Steps>
+
+## 手动使用
+
+安装标记所在的包。
+
+```bash
+npm install platejs
+```
+
+不需要整个套件时，直接添加 `UnderlinePlugin`。
+
+```tsx
+import { UnderlinePlugin } from 'platejs/react';
+import { createEditor } from 'platejs/react';
+
+export const editor = createEditor({
+  plugins: [UnderlinePlugin],
+});
+```
+
+需要让用户输入下划线分隔符时，注册 Markdown 风格的输入规则。
+
+```tsx
+import { UnderlineRules } from 'platejs';
+import { UnderlinePlugin } from 'platejs/react';
+
+export const underlinePlugin = UnderlinePlugin.configure({
+  inputRules: [UnderlineRules.markdown()],
+});
+```
+
+## 归属
+
+| 接口 | 负责方 | 作用 |
+|---------|-------|--------------|
+| `BaseUnderlinePlugin` | `platejs` | 无头下划线标记、HTML 解析器、渲染标签和 `toggle` 转换。 |
+| `UnderlinePlugin` | `platejs/react` | 带默认 `mod+u` 快捷键的 React 包装。 |
+| `UnderlineRules.markdown` | `platejs` | 可选的标记输入规则工厂。 |
+| `BasicMarksKit` | Registry | 添加带下划线输入规则的 `UnderlinePlugin`。 |
+| `MarkToolbarButton` | Registry UI | 读取当前标记状态并调用标记切换 hook。 |
+
+包负责标记本身。Registry 负责工具栏位置和图标选择。
+
+## 行为
+
+| 行为 | 来源 |
+|----------|--------|
+| 标记键 | `editor.plugin(UnderlinePlugin).schema.key`（默认：`underline`） |
+| 标记声明 | `schema.mark: property.boolean({ default: false, omitDefault: true })` |
+| 切换命令 | `tx.underline.toggle()` 切换解析后的 schema 键。 |
+| 快捷键 | `UnderlinePlugin` 注册 `mod+u`。 |
+| HTML 标签 | `u` |
+| HTML 样式 | `text-decoration: underline` |
+| HTML 例外 | 忽略 `textDecoration` 为 `none` 的后代。 |
+| 渲染输出 | `u` |
+
+## API 参考
+
+| API | 包 | 用途 |
+|-----|---------|-----|
+| `BaseUnderlinePlugin` | `platejs` | 无头下划线插件。 |
+| `UnderlinePlugin` | `platejs/react` | 带默认快捷键的 React 下划线插件。 |
+| `UnderlineRules.markdown()` | `platejs` | 创建下划线标记输入规则。 |
+| `tx.underline.toggle()` | `platejs` | 在选区处切换下划线标记。 |
