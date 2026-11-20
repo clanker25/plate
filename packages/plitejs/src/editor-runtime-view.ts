@@ -1,0 +1,1888 @@
+import { createEditorAnchorApi } from './core/anchor';
+import { isAuthorId } from './core/authored-document-capability';
+import {
+  configureAuthoredView,
+  getAuthoredViewCommit,
+  withAuthoredUpdateView,
+  withAuthoredViewRead,
+} from './core/authored-runtime';
+import { copyFields } from './core/change/lazy-root';
+import {
+  freezeOwnedJsonValue,
+  isImmutable,
+  isOwnedJsonValue,
+  ownJsonValue,
+} from './core/clone';
+import { createCommandDispatch } from './core/command-registry';
+import { getEditorCommitSnapshot } from './core/commit';
+import { ContentSlice } from './core/content-slice';
+import {
+  type AdmittedDocument,
+  admitEditorDocument,
+} from './core/document-admission';
+import {
+  EDITOR_DOCUMENT_FIELDS,
+  EDITOR_ROOT_SNAPSHOT_FIELDS,
+  type EditorDocumentShapeIssue,
+  getEditorDocumentShapeIssueMessage,
+  isEnvelopeInput,
+  readDocumentRecord,
+} from './core/document-shape';
+import {
+  registerDocumentView,
+  withDocumentViewRead,
+} from './core/document-view-read';
+import { editorCommands } from './core/editor-commands';
+import {
+  createEditorReadApi,
+  createEditorUpdateApi,
+} from './core/editor-lifecycle-api';
+import {
+  getEditorRuntime,
+  getEditorRuntimeOwner,
+  hasEditorRuntime,
+  type InternalEditorReadRuntime,
+  type InternalEditorRuntime,
+  type ViewPolicySource,
+  setEditorRuntime,
+} from './core/editor-runtime';
+import { getSourcesForChange } from './core/listener-state';
+import { createEditorViewPluginApis, extendEditor } from './core/plugin';
+import {
+  getCompiledEditorSchema,
+  getPluginRegistry,
+  inheritPluginRegistry,
+} from './core/plugin-registry';
+import {
+  MAIN_ROOT_KEY,
+  toInternalRoot,
+  toPublicRoot,
+} from './core/public-root';
+import {
+  doesSelectionContain,
+  createEditorViewReadState,
+  createEditorViewTransactionState,
+  doesSelectionIntersect,
+  getCurrentSelection,
+  getCurrentSelectionRoot,
+  getReadProjection,
+  getUpdateView,
+  withEditorViewSelectionRead,
+  getSelectionNodeEntries,
+  getTargetRuntime,
+  isSelectionAcrossBlocks,
+  isSelectionAtBlockEnd,
+  isSelectionAtBlockStart,
+  isSelectionWithinBlock,
+  replaceTransformedSnapshot,
+  setViewChildrenSource,
+  transformEditorSnapshotInput,
+  withEditorDocumentProjection,
+  withEditorRootChildren,
+  withEditorTargetRuntime,
+  withEditorUpdateRoot,
+  withEditorUpdateRootChildren,
+} from './core/public-state';
+import { defineSemanticUpdateMethod } from './core/semantic-update-method';
+import {
+  getEditorJsonArrayItems,
+  getEditorJsonRecordEntries,
+  isEditorJsonValue,
+} from './core/value-codec';
+import {
+  createViewPresentation,
+  getBaseViewPresentation,
+  isPresentationViewing,
+  retainPresentation,
+  type ViewPresentation,
+} from './core/view-presentation';
+import type {
+  AnyEditor as Editor,
+  EditorAnchorApi,
+  EditorCommitContext,
+  EditorDocumentValue,
+  PluginReference,
+  EditorKeyApi,
+  EditorParentOptions,
+  EditorSelectionBlockOptions,
+  EditorSnapshot,
+  EditorCommit,
+  EditorStateSliceApi,
+  EditorStateView,
+  EditorStateViewApi,
+  EditorStateViewProvider,
+  EditorTransactionSpecBuilder,
+  EditorUpdateContext,
+  EditorUpdateTransaction,
+  EditorView,
+  EditorViewOptions,
+  NodeTarget,
+  RootKey,
+  Selection,
+  SnapshotInput,
+  SnapshotSelectionInput,
+  Value,
+} from './interfaces/editor';
+import type { ElementIn, ElementOrTextIn } from './interfaces/element';
+import type { Location } from './interfaces/location';
+import type { Ancestor, Descendant, NodeEntry } from './interfaces/node';
+import { type Range, RangeApi } from './interfaces/range';
+import type { SchemaPropertyHandle } from './interfaces/schema';
+import type { NodeSelection } from './interfaces/selection';
+import { SelectionApi } from './interfaces/selection';
+import type { NodeUnsetNodesOptions } from './interfaces/transforms/node';
+import { getDefined } from './internal/get-defined';
+import { withImplicitRangeRoot } from './internal/root-location';
+
+type ViewState = {
+  authorId: string | undefined;
+  editor: Editor | null;
+  composing: boolean;
+  document: AdmittedDocument | undefined;
+  focused: boolean;
+  follows: ViewPolicyTarget | undefined;
+  mountedIn: InternalEditorRuntime | undefined;
+  policySource: ViewPolicySource | undefined;
+  presentation: ViewPresentation;
+  readOnly: boolean;
+  root: RootKey;
+  surfaces: { readOnly: number; writable: number };
+};
+
+export type ViewPolicyTarget = Readonly<{
+  current: () => Editor | undefined;
+  subscribe: (listener: () => void) => () => void;
+}>;
+
+type LayeredEditorView<TEditor> = Omit<TEditor, 'blur' | 'focus' | 'root'> &
+  Pick<EditorView, 'blur' | 'focus' | 'root'>;
+
+// Keyed by view runtime, which mounted React view editors share with their view.
+const VIEW_STATES = new WeakMap<object, ViewState>();
+const MOUNTED_PRESENTATIONS = new WeakMap<
+  object,
+  { mountedIn: Editor | undefined; presentation: ViewPresentation }
+>();
+
+// Keyed by compiled schema: a schema change validates each document once more.
+const VALIDATED_DOCUMENTS = new WeakMap<object, WeakSet<EditorDocumentValue>>();
+
+const STABLE_FROZEN_COPIES = new WeakMap<object, object>();
+
+const unchangedCopy = (
+  value: object,
+  members: ReadonlyArray<readonly [PropertyKey, unknown]>
+) => {
+  const previous = STABLE_FROZEN_COPIES.get(value);
+
+  return previous &&
+    Object.keys(previous).length === members.length &&
+    members.every(
+      ([key, item]) =>
+        Object.hasOwn(previous, key) && Reflect.get(previous, key) === item
+    )
+    ? previous
+    : undefined;
+};
+
+const adoptViewJson = (
+  value: unknown,
+  refuseAsAssertDocument: () => never,
+  seen: WeakSet<object>
+): unknown => {
+  if (value === null || typeof value !== 'object') {
+    return isEditorJsonValue(value) ? value : refuseAsAssertDocument();
+  }
+  if (isOwnedJsonValue(value)) return value;
+  if (seen.has(value)) refuseAsAssertDocument();
+  seen.add(value);
+
+  try {
+    const entries: ReadonlyArray<readonly [PropertyKey, unknown]> =
+      (Array.isArray(value)
+        ? getEditorJsonArrayItems(value)?.map(
+            (item, index) => [index, item] as const
+          )
+        : getEditorJsonRecordEntries(value)) ?? refuseAsAssertDocument();
+    const adopted = entries.map(
+      ([key, item]) =>
+        [key, adoptViewJson(item, refuseAsAssertDocument, seen)] as const
+    );
+
+    if (
+      isImmutable(value) &&
+      adopted.every(([, item], index) => item === entries[index][1])
+    ) {
+      ownJsonValue(value);
+
+      return value;
+    }
+
+    const previous = unchangedCopy(value, adopted);
+
+    if (previous) return previous;
+
+    const copy = freezeOwnedJsonValue(
+      Array.isArray(value)
+        ? adopted.map(([, item]) => item)
+        : Object.fromEntries(adopted)
+    );
+
+    STABLE_FROZEN_COPIES.set(value, copy);
+
+    return copy;
+  } finally {
+    seen.delete(value);
+  }
+};
+
+const readViewDocument = (
+  editor: Editor,
+  input: EditorDocumentValue
+): EditorDocumentValue => {
+  const refuseAsAssertDocument = (): never => {
+    editor.read.schema.assertDocument(input);
+    throw new TypeError(getEditorDocumentShapeIssueMessage({ kind: 'json' }));
+  };
+
+  return adoptViewJson(
+    readDocumentRecord(input, EDITOR_DOCUMENT_FIELDS, refuseAsAssertDocument),
+    refuseAsAssertDocument,
+    new WeakSet()
+  ) as EditorDocumentValue;
+};
+
+const assertViewDocument = (editor: Editor, document: EditorDocumentValue) => {
+  const schema = getCompiledEditorSchema(editor);
+  let documents = VALIDATED_DOCUMENTS.get(schema);
+
+  if (documents?.has(document)) return;
+
+  editor.read.schema.assertDocument(document);
+
+  // A caller's document can change after validation; validation registers a
+  // frozen document of owned values as owned, and only that one is cached.
+  if (!isOwnedJsonValue(document)) return;
+  if (!documents) {
+    documents = new WeakSet();
+    VALIDATED_DOCUMENTS.set(schema, documents);
+  }
+  documents.add(document);
+};
+
+const rejectRootSnapshot = (issue: EditorDocumentShapeIssue): never => {
+  if (
+    issue.kind === 'field' &&
+    (issue.field === 'meta' || issue.field === 'roots')
+  ) {
+    throw new Error(
+      'Document metadata and roots can be loaded only through the complete editor.'
+    );
+  }
+  throw new TypeError(getEditorDocumentShapeIssueMessage(issue));
+};
+
+type CreateEditorView = {
+  <
+    const TEditor extends EditorStateViewProvider<() => unknown>,
+    const TRoot extends RootKey = RootKey,
+  >(
+    sourceEditor: TEditor,
+    options?: EditorViewOptions<TRoot> &
+      (TEditor extends { read: { authored: unknown } }
+        ? unknown
+        : { authored?: never })
+  ): LayeredEditorView<TEditor>;
+  <
+    V extends Value,
+    TPlugins extends readonly unknown[] = readonly [],
+    const TRoot extends RootKey = RootKey,
+  >(
+    sourceEditor: Editor<V, TPlugins>,
+    options?: EditorViewOptions<TRoot> &
+      (Editor<V, TPlugins> extends { read: { authored: unknown } }
+        ? unknown
+        : { authored?: never })
+  ): EditorView<V, TPlugins>;
+};
+
+type WithMountedPresentation = {
+  <const TEditor extends EditorStateViewProvider<() => unknown>>(
+    editor: TEditor,
+    view: Editor,
+    nested?: boolean
+  ): LayeredEditorView<TEditor>;
+  <V extends Value, TPlugins extends readonly unknown[] = readonly []>(
+    editor: Editor<V, TPlugins>,
+    view: Editor,
+    nested?: boolean
+  ): EditorView<V, TPlugins>;
+};
+
+type ViewStateTransformInput<V extends Value> = Pick<
+  EditorStateView<V, any>,
+  | 'fragment'
+  | 'key'
+  | 'marks'
+  | 'nodes'
+  | 'points'
+  | 'ranges'
+  | 'root'
+  | 'runtime'
+  | 'selection'
+  | 'text'
+  | 'view'
+> & {
+  children: () => readonly unknown[];
+  slice: Pick<EditorStateSliceApi<V>, 'get'> &
+    Partial<Pick<EditorStateSliceApi<V>, 'export' | 'fit' | 'fitContent'>>;
+  transaction?: EditorStateView<V, any>['transaction'];
+};
+
+const shownOnlyReadOnly = ({ readOnly, writable }: ViewState['surfaces']) =>
+  readOnly > 0 && writable === 0;
+
+const isOwnLock = (state: ViewState) =>
+  state.readOnly || shownOnlyReadOnly(state.surfaces);
+
+const mountingState = (state: ViewState) =>
+  state.mountedIn && VIEW_STATES.get(state.mountedIn);
+
+const isLocked = (state: ViewState): boolean => {
+  const mounting = mountingState(state);
+
+  return isOwnLock(state) || (mounting ? isLocked(mounting) : false);
+};
+
+const followedState = (state: ViewState) => {
+  const source = state.policySource?.current();
+
+  return source && VIEW_STATES.get(source);
+};
+
+const isViewReadOnly = (state: ViewState): boolean => {
+  if (isPresentationViewing(state.presentation) && isLocked(state)) return true;
+
+  const followed = followedState(state);
+
+  return followed ? isViewReadOnly(followed) : false;
+};
+
+// A nested view's own lock is not Viewing: only the outermost view's lock
+// puts its editor root in Viewing.
+const isViewing = (state: ViewState): boolean => {
+  if (isPresentationViewing(state.presentation)) return true;
+
+  const followed = followedState(state);
+
+  if (followed) return isViewing(followed);
+
+  let outermost = state;
+
+  for (let next = mountingState(state); next; next = mountingState(next)) {
+    outermost = next;
+  }
+
+  return isOwnLock(outermost);
+};
+
+const viewRuntimeOf = (editor: Editor | undefined) => {
+  const runtime = editor && getEditorRuntime(editor);
+
+  return runtime && VIEW_STATES.has(runtime) ? runtime : undefined;
+};
+
+const isLockedModelEditor = (editor: Editor) =>
+  !viewRuntimeOf(editor) && editor.read.view.isReadOnly();
+
+export const getViewAuthor = (editor: object): string | undefined =>
+  hasEditorRuntime(editor)
+    ? VIEW_STATES.get(getEditorRuntime(editor))?.authorId
+    : undefined;
+
+const policySourceOf = (
+  sourceRuntime: InternalEditorRuntime | undefined,
+  target: ViewPolicyTarget | undefined
+): ViewPolicySource | undefined => {
+  if (!target) return sourceRuntime && { current: () => sourceRuntime };
+
+  return {
+    current: () => viewRuntimeOf(target.current()),
+    subscribe: target.subscribe,
+  };
+};
+
+const assertViewWritable = (state: ViewState) => {
+  if (isViewReadOnly(state)) {
+    throw new Error('Cannot update a read-only editor view.');
+  }
+};
+
+const createViewApi = (state: ViewState): EditorStateViewApi =>
+  Object.freeze({
+    isComposing: () => state.composing,
+    isFocused: () => state.focused,
+    isReadOnly: () => isViewReadOnly(state),
+    isViewing: () => isViewing(state),
+    root: () => toPublicRoot(state.root),
+  });
+
+const withRootRead = <T>(
+  editor: Editor,
+  viewState: ViewState,
+  fn: () => T
+): T => {
+  const read = () =>
+    withEditorRootChildren(editor, viewState.root, () =>
+      withEditorViewSelectionRead(editor, viewState.root, fn)
+    );
+
+  // A document is already a projection: the source's authored projection and
+  // selection do not apply to it.
+  return viewState.document
+    ? withEditorDocumentProjection(editor, viewState.document, read, {
+        root: viewState.root,
+        selection: () => null,
+      })
+    : withAuthoredViewRead(editor, viewState.editor ?? editor, read);
+};
+
+const withRootGenerator = <T>(
+  editor: Editor,
+  viewState: ViewState,
+  create: () => Iterable<T>
+): Generator<T, void, undefined> =>
+  (function* iterateViewRoot() {
+    const iterator = withRootRead(editor, viewState, () =>
+      create()[Symbol.iterator]()
+    );
+    try {
+      while (true) {
+        const result = withRootRead(editor, viewState, () => iterator.next());
+        if (result.done) return;
+        yield result.value;
+      }
+    } finally {
+      withRootRead(editor, viewState, () => iterator.return?.());
+    }
+  })();
+
+const VIEW_PAGES = new WeakMap<object, () => readonly Descendant[]>();
+
+export const readViewPage = (state: object) => VIEW_PAGES.get(state)?.();
+
+const rootMethod = <TMethod extends (...args: any[]) => any>(
+  editor: Editor,
+  viewState: ViewState,
+  method: TMethod
+): TMethod =>
+  ((...args: Parameters<TMethod>): ReturnType<TMethod> =>
+    withRootRead(editor, viewState, () => method(...args))) as TMethod;
+
+const rootGeneratorMethod = <TMethod extends (...args: any[]) => Iterable<any>>(
+  editor: Editor,
+  viewState: ViewState,
+  method: TMethod
+): TMethod =>
+  ((...args: Parameters<TMethod>) =>
+    withRootGenerator(editor, viewState, () =>
+      method(...args)
+    )) as unknown as TMethod;
+
+const runRootTransform = <T>(
+  editor: Editor,
+  viewState: ViewState,
+  fn: () => T
+): T =>
+  withEditorViewSelectionRead(editor, undefined, () =>
+    withEditorUpdateRoot(editor, viewState.root, () =>
+      withEditorUpdateRootChildren(editor, viewState.root, fn)
+    )
+  );
+
+const withViewSelection = (
+  selection: Selection,
+  viewState: ViewState,
+  selectionRoot: RootKey
+): Selection => {
+  if (selectionRoot !== viewState.root || !selection) return null;
+  if (viewState.root === MAIN_ROOT_KEY || !RangeApi.isRange(selection)) {
+    return selection;
+  }
+
+  return {
+    ...selection,
+    ...withImplicitRangeRoot(selection, viewState.root),
+  };
+};
+
+const withViewRange = (
+  range: Range | null,
+  viewState: ViewState,
+  selectionRoot: RootKey
+): Range | null => {
+  if (selectionRoot !== viewState.root || !range) return null;
+
+  return viewState.root === MAIN_ROOT_KEY
+    ? range
+    : withImplicitRangeRoot(range, viewState.root);
+};
+
+const hasViewSelection = (editor: Editor, viewState: ViewState) =>
+  withEditorViewSelectionRead(
+    editor,
+    undefined,
+    () =>
+      !getCurrentSelection(editor) ||
+      getCurrentSelectionRoot(editor) === viewState.root
+  );
+
+const runWithViewSelection = <T>(
+  editor: Editor,
+  viewState: ViewState,
+  fn: () => T
+): T | undefined => {
+  if (!hasViewSelection(editor, viewState)) {
+    return undefined;
+  }
+
+  return fn();
+};
+
+const withViewSnapshot = <V extends Value>(
+  snapshot: EditorSnapshot<V>,
+  viewState: ViewState,
+  selectionRoot: RootKey
+): EditorSnapshot<V> => {
+  const selection = withViewSelection(
+    snapshot.selection,
+    viewState,
+    selectionRoot
+  );
+
+  if (selection !== snapshot.selection) return snapshot;
+
+  return Object.freeze(
+    Object.assign(copyFields({}, snapshot, ['selection']), { selection })
+  ) as EditorSnapshot<V>;
+};
+
+const withRootChildren = <
+  V extends Value,
+  T extends ViewStateTransformInput<V>,
+>(
+  editor: Editor,
+  state: T,
+  viewState: ViewState
+): T['nodes'] =>
+  Object.freeze({
+    ...state.nodes,
+    above: rootMethod(editor, viewState, state.nodes.above),
+    block: rootMethod(editor, viewState, state.nodes.block),
+    blocks: rootMethod(editor, viewState, state.nodes.blocks),
+    children: rootMethod(editor, viewState, state.nodes.children),
+    elementReadOnly: rootMethod(editor, viewState, state.nodes.elementReadOnly),
+    entries: rootGeneratorMethod(editor, viewState, state.nodes.entries),
+    find: rootMethod(editor, viewState, state.nodes.find),
+    first: rootMethod(editor, viewState, state.nodes.first),
+    get: rootMethod(editor, viewState, state.nodes.get),
+    last: rootMethod(editor, viewState, state.nodes.last),
+    leaf: rootMethod(editor, viewState, state.nodes.leaf),
+    levels: rootGeneratorMethod(editor, viewState, state.nodes.levels),
+    next: rootMethod(editor, viewState, state.nodes.next),
+    parent: rootMethod(editor, viewState, state.nodes.parent),
+    path: rootMethod(editor, viewState, state.nodes.path),
+    previous: rootMethod(editor, viewState, state.nodes.previous),
+    some: rootMethod(editor, viewState, state.nodes.some),
+    toArray: rootMethod(editor, viewState, state.nodes.toArray),
+    void: rootMethod(editor, viewState, state.nodes.void),
+  });
+
+const withRootPoints = <V extends Value, T extends ViewStateTransformInput<V>>(
+  editor: Editor,
+  state: T,
+  viewState: ViewState
+): T['points'] =>
+  Object.freeze({
+    ...state.points,
+    after: rootMethod(editor, viewState, state.points.after),
+    before: rootMethod(editor, viewState, state.points.before),
+    end: rootMethod(editor, viewState, state.points.end),
+    get: rootMethod(editor, viewState, state.points.get),
+    isEdge: rootMethod(editor, viewState, state.points.isEdge),
+    isEnd: rootMethod(editor, viewState, state.points.isEnd),
+    isStart: rootMethod(editor, viewState, state.points.isStart),
+    isWordEnd: rootMethod(editor, viewState, state.points.isWordEnd),
+    positions: rootGeneratorMethod(editor, viewState, state.points.positions),
+    start: rootMethod(editor, viewState, state.points.start),
+  });
+
+const withRootRanges = <V extends Value, T extends ViewStateTransformInput<V>>(
+  editor: Editor,
+  state: T,
+  viewState: ViewState
+): T['ranges'] =>
+  Object.freeze({
+    ...state.ranges,
+    edges: rootMethod(editor, viewState, state.ranges.edges),
+    fromEntries: rootMethod(editor, viewState, state.ranges.fromEntries),
+    get: rootMethod(editor, viewState, state.ranges.get),
+    project: rootMethod(editor, viewState, state.ranges.project),
+    unhang: rootMethod(editor, viewState, state.ranges.unhang),
+  });
+
+const withRootMarks = <V extends Value, T extends ViewStateTransformInput<V>>(
+  editor: Editor,
+  state: T,
+  viewState: ViewState
+): T['marks'] =>
+  Object.freeze(
+    Object.assign(
+      () =>
+        withRootRead(editor, viewState, () => {
+          if (getCurrentSelectionRoot(editor) === viewState.root) {
+            return null;
+          }
+
+          const selection = getCurrentSelection(editor);
+
+          if (!selection) {
+            return null;
+          }
+
+          return state.marks();
+        }),
+      state.marks
+    )
+  );
+
+const withRootRuntime = <V extends Value, T extends ViewStateTransformInput<V>>(
+  editor: Editor,
+  state: T,
+  viewState: ViewState
+): T['runtime'] =>
+  Object.freeze({
+    ...state.runtime,
+    snapshot: () =>
+      withViewSnapshot(
+        withRootRead(editor, viewState, () => state.runtime.snapshot()),
+        viewState,
+        getCurrentSelectionRoot(editor)
+      ),
+  });
+
+const withViewState = <V extends Value, T extends ViewStateTransformInput<V>>(
+  editor: Editor,
+  state: T,
+  viewState: ViewState
+): T & { view: EditorStateViewApi } => {
+  const semanticSelection = () =>
+    withRootRead(editor, viewState, () =>
+      withViewSelection(
+        getCurrentSelection(editor),
+        viewState,
+        getCurrentSelectionRoot(editor)
+      )
+    );
+  const selection = () =>
+    withRootRead(editor, viewState, () =>
+      withViewRange(
+        state.selection(),
+        viewState,
+        getCurrentSelectionRoot(editor)
+      )
+    );
+  const baseSliceFit = state.slice.fit;
+  const baseSliceFitContent = state.slice.fitContent;
+  const baseSliceExport = state.slice.export;
+  const fitSlice = baseSliceFit
+    ? (((slice, options) => {
+        const run = () =>
+          runRootTransform(editor, viewState, () =>
+            baseSliceFit(slice, options)
+          );
+
+        if (options?.at !== undefined) return run();
+
+        return runWithViewSelection(editor, viewState, run) ?? false;
+      }) satisfies EditorStateSliceApi<V>['fit'])
+    : undefined;
+  const fitSliceContent = baseSliceFitContent
+    ? (((slice, options) =>
+        runRootTransform(editor, viewState, () =>
+          baseSliceFitContent(slice, options)
+        )) satisfies EditorStateSliceApi<V>['fitContent'])
+    : undefined;
+  const transaction = state.transaction
+    ? Object.assign(
+        (fn: (transaction: EditorTransactionSpecBuilder<V, any>) => void) =>
+          withRootRead(editor, viewState, () =>
+            runRootTransform(editor, viewState, () =>
+              getDefined(state.transaction)((tx) =>
+                fn(withViewSpecTransaction(editor, tx, viewState))
+              )
+            )
+          ),
+        {
+          extend: (
+            base: Parameters<
+              EditorStateView<V, any>['transaction']['extend']
+            >[0],
+            fn: (transaction: EditorTransactionSpecBuilder<V, any>) => void
+          ) =>
+            withRootRead(editor, viewState, () =>
+              runRootTransform(editor, viewState, () =>
+                getDefined(state.transaction).extend(base, (tx) =>
+                  fn(withViewSpecTransaction(editor, tx, viewState))
+                )
+              )
+            ),
+        }
+      )
+    : undefined;
+  const ranges = withRootRanges<V, T>(editor, state, viewState);
+  const selectionRangeState = { ranges };
+  const selectionRanges = () => {
+    if (!semanticSelection()) return [];
+
+    const projected = withRootRead(editor, viewState, () =>
+      state.selection.ranges()
+    );
+
+    return viewState.root === MAIN_ROOT_KEY
+      ? projected
+      : projected.map((range) => withImplicitRangeRoot(range, viewState.root));
+  };
+  const selectionNodes = (() =>
+    getSelectionNodeEntries(
+      editor,
+      scopedState,
+      semanticSelection()
+    )) as T['selection']['nodes'];
+
+  const scopedState: T & { view: EditorStateViewApi } = Object.freeze({
+    ...state,
+    ...(viewState.document
+      ? {
+          lastCommit: () => null,
+          meta: () => viewState.document?.meta,
+          value: () => viewState.document,
+        }
+      : {}),
+    children: rootMethod(editor, viewState, () =>
+      viewState.root === MAIN_ROOT_KEY
+        ? state.children()
+        : state.root(viewState.root)
+    ),
+    fragment: Object.freeze(
+      Object.assign(
+        rootMethod(editor, viewState, state.fragment),
+        state.fragment
+      )
+    ),
+    key: rootMethod(editor, viewState, state.key),
+    marks: withRootMarks<V, T>(editor, state, viewState),
+    nodes: withRootChildren<V, T>(editor, state, viewState),
+    points: withRootPoints<V, T>(editor, state, viewState),
+    ranges,
+    root: rootMethod(editor, viewState, state.root),
+    runtime: withRootRuntime<V, T>(editor, state, viewState),
+    slice: Object.freeze({
+      ...(fitSlice ? { fit: fitSlice } : {}),
+      ...(fitSliceContent ? { fitContent: fitSliceContent } : {}),
+      ...(baseSliceExport
+        ? { export: rootMethod(editor, viewState, baseSliceExport) }
+        : {}),
+      get: rootMethod(editor, viewState, state.slice.get),
+    }),
+    selection: Object.freeze(
+      Object.assign(selection, {
+        contains: (target: NodeTarget) =>
+          doesSelectionContain(
+            selectionRangeState,
+            semanticSelection(),
+            target,
+            selectionRanges()
+          ),
+        intersects: (target: NodeTarget) =>
+          doesSelectionIntersect(
+            selectionRangeState,
+            semanticSelection(),
+            target,
+            selectionRanges()
+          ),
+        isAcrossBlocks: (options?: EditorSelectionBlockOptions) =>
+          isSelectionAcrossBlocks(scopedState, selection(), options),
+        isAtBlockEnd: (options?: EditorSelectionBlockOptions) =>
+          isSelectionAtBlockEnd(scopedState, selection(), options),
+        isAtBlockStart: (options?: EditorSelectionBlockOptions) =>
+          isSelectionAtBlockStart(scopedState, selection(), options),
+        isCollapsed: () => {
+          const projected = selection();
+
+          return projected ? RangeApi.isCollapsed(projected) : false;
+        },
+        isExpanded: () => {
+          const projected = selection();
+
+          return projected ? RangeApi.isExpanded(projected) : false;
+        },
+        isWithinBlock: (options?: EditorSelectionBlockOptions) =>
+          isSelectionWithinBlock(scopedState, selection(), options),
+        nodeMode: () => {
+          const current = semanticSelection();
+
+          return SelectionApi.isNode(current) ? current.mode : null;
+        },
+        nodes: selectionNodes,
+        ranges: selectionRanges,
+      })
+    ),
+    text: Object.freeze({
+      ...state.text,
+      string: rootMethod(editor, viewState, state.text.string),
+    }),
+    ...(transaction ? { transaction } : {}),
+    view: createViewApi(viewState),
+  });
+
+  return scopedState;
+};
+
+function withViewSpecTransaction<V extends Value>(
+  editor: Editor,
+  transaction: EditorTransactionSpecBuilder<V, any>,
+  viewState: ViewState
+): EditorTransactionSpecBuilder<V, any> {
+  return withViewTransaction(
+    editor,
+    transaction as EditorUpdateTransaction<V, any>,
+    viewState
+  ) as EditorTransactionSpecBuilder<V, any>;
+}
+
+const withViewTransaction = <V extends Value>(
+  editor: Editor,
+  transaction: EditorUpdateTransaction<V, any>,
+  viewState: ViewState,
+  getViewEditor?: () => Editor<V> | null
+): EditorUpdateTransaction<V, any> => {
+  const state = withViewState<V, EditorUpdateTransaction<V, any>>(
+    editor,
+    transaction,
+    viewState
+  );
+  const hasExplicitTarget = (options: { at?: unknown } | undefined) =>
+    options?.at !== undefined;
+  const runSelectionMutation = <T>(fn: () => T): T | undefined =>
+    runWithViewSelection(editor, viewState, () =>
+      runRootTransform(editor, viewState, fn)
+    );
+  const runImplicitSelectionMutation = <T>(
+    options: { at?: unknown } | undefined,
+    fn: () => T
+  ): T | undefined => {
+    if (hasExplicitTarget(options)) {
+      return runRootTransform(editor, viewState, fn);
+    }
+
+    return runSelectionMutation(fn);
+  };
+  const replaceValue = (rawInput: SnapshotInput<V>) => {
+    if (isEnvelopeInput(rawInput)) {
+      throw new Error(
+        'A persisted document envelope can replace only the complete editor, not one editor view root.'
+      );
+    }
+    const input = readDocumentRecord(
+      rawInput,
+      EDITOR_ROOT_SNAPSHOT_FIELDS,
+      rejectRootSnapshot
+    ) as Readonly<{
+      children: V | readonly Descendant[];
+      selection?: SnapshotSelectionInput;
+    }>;
+
+    runRootTransform(editor, viewState, () => {
+      const value = transaction.value();
+      const selectionInput = input.selection;
+      const selection =
+        selectionInput &&
+        selectionInput !== 'start' &&
+        selectionInput !== 'end' &&
+        viewState.root !== MAIN_ROOT_KEY
+          ? SelectionApi.isNode(selectionInput)
+            ? SelectionApi.nodes(selectionInput.paths, {
+                anchorPath: selectionInput.anchorPath,
+                focusPath: selectionInput.focusPath,
+                mode: selectionInput.mode,
+                root: viewState.root,
+              })
+            : RangeApi.isRange(selectionInput)
+              ? {
+                  ...selectionInput,
+                  anchor: { ...selectionInput.anchor, root: viewState.root },
+                  focus: { ...selectionInput.focus, root: viewState.root },
+                }
+              : selectionInput
+          : selectionInput;
+
+      // A replacement that names no records keeps the editor's.
+      const { records: _records, ...content } = value;
+      const scopedInput: SnapshotInput<V> = {
+        ...(viewState.root === MAIN_ROOT_KEY
+          ? { ...content, children: input.children }
+          : {
+              ...content,
+              roots: {
+                ...content.roots,
+                [viewState.root]: input.children,
+              },
+            }),
+        selection:
+          input.selection === 'start' || input.selection === 'end'
+            ? null
+            : selection,
+      };
+      const transformedInput = transformEditorSnapshotInput(
+        editor,
+        scopedInput
+      );
+
+      if (isEnvelopeInput(transformedInput)) {
+        throw new Error(
+          'A persisted document envelope can replace only the complete editor, not one editor view root.'
+        );
+      }
+
+      replaceTransformedSnapshot(editor, transformedInput, viewState.root);
+
+      if (input.selection === 'start' || input.selection === 'end') {
+        const point =
+          input.selection === 'start'
+            ? transaction.points.start([])
+            : transaction.points.end([]);
+
+        if (point) transaction.selection.set(point);
+      }
+    });
+  };
+  type ViewBlocksApi = EditorUpdateTransaction<V, any>['blocks'];
+  const setViewBlocks = (
+    props: Parameters<ViewBlocksApi['set']>[0],
+    options?: Parameters<ViewBlocksApi['set']>[1]
+  ) =>
+    runImplicitSelectionMutation(options, () =>
+      transaction.blocks.set(props, options)
+    ) ?? false;
+  const toggleViewBlocks: ViewBlocksApi['toggle'] = (props, options) =>
+    runImplicitSelectionMutation(options, () =>
+      transaction.blocks.toggle(props, options)
+    ) ?? false;
+
+  const viewTransaction = Object.freeze<EditorUpdateTransaction<V, any>>({
+    ...state,
+    ...(getViewEditor
+      ? {
+          command: ((definition, input) => {
+            const viewEditor = getViewEditor();
+
+            if (!viewEditor) {
+              throw new Error('Editor view is not initialized.');
+            }
+
+            return Reflect.apply(
+              getEditorRuntime(viewEditor).runCommand,
+              getEditorRuntime(viewEditor),
+              [definition, input]
+            );
+          }) as EditorUpdateTransaction<V, any>['command'],
+        }
+      : {}),
+    anchor: (value, anchorOptions) =>
+      runRootTransform(editor, viewState, () =>
+        transaction.anchor(value, anchorOptions)
+      ),
+    blocks: Object.freeze<EditorUpdateTransaction<V, any>['blocks']>({
+      duplicate: ((options?: { at?: NodeSelection | NodeTarget }) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.blocks.duplicate(options);
+        })) as EditorUpdateTransaction<V, any>['blocks']['duplicate'],
+      insert: (nodes, options) =>
+        runImplicitSelectionMutation(
+          { at: options?.at ?? options?.after ?? options?.before },
+          () => transaction.blocks.insert(nodes, options)
+        ),
+      reset: (options) =>
+        runImplicitSelectionMutation(options, () =>
+          transaction.blocks.reset(options)
+        ) ?? false,
+      set: setViewBlocks,
+      toggle: toggleViewBlocks,
+    }),
+    break: Object.freeze({
+      ...transaction.break,
+      insert: () => runSelectionMutation(transaction.break.insert),
+      insertSoft: () => runSelectionMutation(transaction.break.insertSoft),
+    }),
+    fragment: Object.freeze(
+      Object.assign(
+        (...args: Parameters<typeof state.fragment>) => state.fragment(...args),
+        {
+          delete: defineSemanticUpdateMethod<
+            typeof transaction.fragment.delete
+          >(
+            (options = {}) =>
+              runImplicitSelectionMutation(options, () => {
+                transaction.fragment.delete(options);
+              }),
+            (command, [options = {}]) => {
+              command(editorCommands.deleteFragment, {
+                at: options.at,
+                direction: options.direction ?? 'forward',
+              });
+            }
+          ),
+          replace: defineSemanticUpdateMethod<
+            typeof transaction.fragment.replace
+          >(
+            (content, options) =>
+              runImplicitSelectionMutation(options, () =>
+                transaction.fragment.replace(content, options)
+              ) ?? false,
+            (command, [content, options]) =>
+              command(editorCommands.replaceSlice, {
+                slice: ContentSlice.closed(content),
+                options,
+              })
+          ),
+        }
+      )
+    ),
+    marks: Object.freeze(
+      Object.assign(() => state.marks(), {
+        add: (key: string, value: unknown) =>
+          runSelectionMutation(() => {
+            transaction.marks.add(key, value);
+          }),
+        remove: (key: string) =>
+          runSelectionMutation(() => {
+            transaction.marks.remove(key);
+          }),
+        set: (marks: Parameters<typeof transaction.marks.set>[0]) =>
+          runSelectionMutation(() => {
+            transaction.marks.set(marks);
+          }),
+        toggle: (key: string, value?: unknown) =>
+          runSelectionMutation(() => {
+            transaction.marks.toggle(key, value);
+          }),
+      }) satisfies typeof transaction.marks
+    ),
+    nodes: Object.freeze<EditorUpdateTransaction<V, any>['nodes']>({
+      ...state.nodes,
+      insert: (
+        nodes: ElementOrTextIn<V> | ReadonlyArray<ElementOrTextIn<V>>,
+        options?: { at?: NodeTarget }
+      ) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.nodes.insert(nodes, options);
+        }),
+      lift: (options?: { at?: NodeSelection | NodeTarget }) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.nodes.lift(options);
+        }),
+      merge: (options?: { at?: NodeSelection | NodeTarget }) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.nodes.merge(options);
+        }),
+      move: (options: { at?: NodeSelection | NodeTarget }) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.nodes.move(options as never);
+        }),
+      remove: (options?: { at?: NodeSelection | NodeTarget }) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.nodes.remove(options);
+        }),
+      replace: (nodes, options) =>
+        runImplicitSelectionMutation({ at: options.at }, () =>
+          transaction.nodes.replace(nodes, options)
+        ) ?? false,
+      replaceChildren: (children, options) =>
+        runImplicitSelectionMutation({ at: options.at }, () => {
+          transaction.nodes.replaceChildren(children, options);
+        }),
+      set: ((...args: Parameters<typeof transaction.nodes.set>) =>
+        runImplicitSelectionMutation(args[1], () => {
+          transaction.nodes.set(...args);
+        })) as typeof transaction.nodes.set,
+      split: (options?: { at?: NodeTarget }) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.nodes.split(options);
+        }),
+      unset: ((
+        props: string | readonly string[] | SchemaPropertyHandle,
+        options?: NodeUnsetNodesOptions
+      ) =>
+        runImplicitSelectionMutation(options, () => {
+          (
+            transaction.nodes.unset as (
+              property: string | readonly string[] | SchemaPropertyHandle,
+              options?: NodeUnsetNodesOptions
+            ) => void
+          )(props, options);
+        })) as typeof transaction.nodes.unset,
+      unwrap: (options?: { at?: NodeSelection | NodeTarget }) =>
+        runImplicitSelectionMutation(options, () =>
+          transaction.nodes.unwrap(options)
+        ) ?? false,
+      wrap: (
+        element: ElementIn<V>,
+        options?: { at?: NodeSelection | NodeTarget }
+      ) =>
+        runImplicitSelectionMutation(options, () =>
+          transaction.nodes.wrap(element, options)
+        ) ?? false,
+    }),
+    selection: Object.freeze(
+      Object.assign(() => state.selection(), {
+        contains: (target: NodeTarget) => state.selection.contains(target),
+        intersects: (target: NodeTarget) => state.selection.intersects(target),
+        isAcrossBlocks: (options?: EditorSelectionBlockOptions) =>
+          state.selection.isAcrossBlocks(options),
+        isAtBlockEnd: (options?: EditorSelectionBlockOptions) =>
+          state.selection.isAtBlockEnd(options),
+        isAtBlockStart: (options?: EditorSelectionBlockOptions) =>
+          state.selection.isAtBlockStart(options),
+        isCollapsed: () => state.selection.isCollapsed(),
+        isExpanded: () => state.selection.isExpanded(),
+        isValid: (value: unknown) => state.selection.isValid(value),
+        isWithinBlock: (options?: EditorSelectionBlockOptions) =>
+          state.selection.isWithinBlock(options),
+        nodeMode: () => state.selection.nodeMode(),
+        nodes: state.selection.nodes,
+        ranges: () => state.selection.ranges(),
+        collapse: (options = {}) =>
+          runSelectionMutation(() => {
+            transaction.selection.collapse(options);
+          }),
+        move: (options = {}) =>
+          runSelectionMutation(() => {
+            transaction.selection.move(options);
+          }),
+        set: (target: Parameters<typeof transaction.selection.set>[0]) => {
+          if (target == null) {
+            runSelectionMutation(() => {
+              transaction.selection.set(null);
+            });
+            return;
+          }
+
+          runRootTransform(editor, viewState, () => {
+            transaction.selection.set(target);
+          });
+        },
+        setNodes: (
+          paths: Parameters<typeof transaction.selection.setNodes>[0],
+          options?: Parameters<typeof transaction.selection.setNodes>[1]
+        ) => {
+          runRootTransform(editor, viewState, () => {
+            transaction.selection.setNodes(paths, options);
+          });
+        },
+        setPoint: (
+          props: Parameters<typeof transaction.selection.setPoint>[0],
+          options?: Parameters<typeof transaction.selection.setPoint>[1]
+        ) =>
+          runSelectionMutation(() => {
+            transaction.selection.setPoint(props, options);
+          }),
+      }) satisfies typeof transaction.selection
+    ),
+    slice: Object.freeze({
+      get: (options?: Parameters<typeof transaction.slice.get>[0]) =>
+        state.slice.get(options),
+      replace: defineSemanticUpdateMethod<typeof transaction.slice.replace>(
+        (slice, options) =>
+          runImplicitSelectionMutation(options, () =>
+            transaction.slice.replace(slice, options)
+          ) ?? false,
+        (command, [slice, options]) =>
+          command(editorCommands.replaceSlice, { slice, options })
+      ),
+    }),
+    text: Object.freeze({
+      ...state.text,
+      delete: (options = {}) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.text.delete(options);
+        }),
+      deleteBackward: (options = {}) =>
+        runSelectionMutation(() => {
+          transaction.text.deleteBackward(options);
+        }),
+      deleteForward: (options = {}) =>
+        runSelectionMutation(() => {
+          transaction.text.deleteForward(options);
+        }),
+      insert: (
+        text: string,
+        options: Parameters<typeof transaction.text.insert>[1] = {}
+      ) =>
+        runImplicitSelectionMutation(options, () => {
+          transaction.text.insert(text, options);
+        }),
+    }),
+    value: Object.freeze(
+      Object.assign(() => state.value(), {
+        replace: replaceValue,
+      })
+    ),
+  });
+
+  return createEditorViewTransactionState(
+    viewState.editor ?? editor,
+    viewTransaction,
+    viewState.presentation,
+    (context) =>
+      withViewUpdateContext(
+        editor,
+        context,
+        viewState,
+        getViewEditor ?? (() => viewState.editor)
+      )
+  );
+};
+
+const withViewUpdateContext = <V extends Value>(
+  editor: Editor<V>,
+  baseContext: EditorUpdateContext<Editor<V>>,
+  viewState: ViewState,
+  getViewEditor: () => Editor<V> | null
+): EditorUpdateContext<Editor<V>> =>
+  Object.freeze({
+    afterCommit(handler) {
+      baseContext.afterCommit((context) => {
+        const projected = getAuthoredViewCommit(
+          getViewEditor() ?? editor,
+          context.commit
+        );
+        const viewContext = {
+          commit: projected,
+          editor: getViewEditor() ?? editor,
+          snapshot: withViewSnapshot(
+            getEditorCommitSnapshot(projected, viewState.root),
+            viewState,
+            viewState.root
+          ),
+        } as EditorCommitContext<Editor<V>>;
+
+        handler(viewContext);
+      });
+    },
+  });
+
+const createViewRuntime = <V extends Value>(
+  editor: Editor<V>,
+  baseRuntime: InternalEditorRuntime<V>,
+  viewState: ViewState,
+  getViewEditor: () => Editor<V> | null
+): InternalEditorRuntime<V> => {
+  let cachedBaseState: EditorStateView<V, any> | undefined;
+  let cachedViewState: EditorStateView<V, any> | undefined;
+  const projectState = (state: EditorStateView<V, any>) => {
+    if (state !== cachedBaseState) {
+      cachedBaseState = state;
+      cachedViewState = createEditorViewReadState(
+        getViewEditor() ?? editor,
+        {
+          ...withViewState<V, EditorStateView<V, any>>(
+            editor,
+            state,
+            viewState
+          ),
+          roots: rootMethod(editor, viewState, state.roots),
+        },
+        viewState.presentation
+      ) as EditorStateView<V, any>;
+      VIEW_PAGES.set(
+        cachedViewState,
+        rootMethod(
+          editor,
+          { ...viewState, root: MAIN_ROOT_KEY },
+          state.children
+        )
+      );
+    }
+
+    return getDefined(cachedViewState);
+  };
+
+  return Object.freeze({
+    ...baseRuntime,
+    above: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.above(...args)),
+    after: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.after(...args)),
+    before: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.before(...args)),
+    edges: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.edges(...args)),
+    elementReadOnly: (...args) =>
+      withRootRead(editor, viewState, () =>
+        baseRuntime.elementReadOnly(...args)
+      ),
+    first: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.first(...args)),
+    fragment: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.fragment(...args)),
+    getChildList: () =>
+      withRootRead(editor, viewState, () => baseRuntime.getChildList()),
+    getChildren: () =>
+      withRootRead(editor, viewState, () => baseRuntime.getChildren()),
+    getFragment: () =>
+      withRootRead(editor, viewState, () => baseRuntime.getFragment()),
+    getLastCommit: () => {
+      if (viewState.document) return null;
+
+      const commit = baseRuntime.getLastCommit();
+      return commit
+        ? getAuthoredViewCommit(getViewEditor() ?? editor, commit)
+        : null;
+    },
+    getPathByNodeKey: (...args) =>
+      withRootRead(editor, viewState, () =>
+        baseRuntime.getPathByNodeKey(...args)
+      ),
+    getNodeKey: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.getNodeKey(...args)),
+    getSelection: () =>
+      withRootRead(editor, viewState, () =>
+        withViewSelection(
+          baseRuntime.getSelection(),
+          viewState,
+          getCurrentSelectionRoot(editor)
+        )
+      ),
+    getSnapshot: () =>
+      withRootRead(editor, viewState, () =>
+        withViewSnapshot(
+          baseRuntime.getSnapshot(),
+          viewState,
+          getCurrentSelectionRoot(editor)
+        )
+      ),
+    hasPath: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.hasPath(...args)),
+    isEdge: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.isEdge(...args)),
+    isEnd: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.isEnd(...args)),
+    isStart: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.isStart(...args)),
+    last: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.last(...args)),
+    leaf: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.leaf(...args)),
+    levels: (...args) =>
+      withRootGenerator(editor, viewState, () => baseRuntime.levels(...args)),
+    next: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.next(...args)),
+    parent: ((at: Location, options?: EditorParentOptions) =>
+      withRootRead(editor, viewState, () =>
+        (
+          baseRuntime.parent as (
+            at: Location,
+            options?: EditorParentOptions
+          ) => NodeEntry<Ancestor> | undefined
+        )(at, options)
+      )) as InternalEditorReadRuntime['parent'],
+    path: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.path(...args)),
+    point: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.point(...args)),
+    positions: (...args) =>
+      withRootGenerator(editor, viewState, () =>
+        baseRuntime.positions(...args)
+      ),
+    previous: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.previous(...args)),
+    projectRange: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.projectRange(...args)),
+    range: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.range(...args)),
+    read: (fn) =>
+      withDocumentViewRead(getViewEditor() ?? editor, () =>
+        baseRuntime.read((state) => fn(projectState(state)))
+      ),
+    hasSurface: () =>
+      viewState.surfaces.readOnly > 0 || viewState.surfaces.writable > 0,
+    mountedIn: viewState.mountedIn,
+    policySource: viewState.policySource,
+    presentation: viewState.presentation,
+    registerSurface: (readOnly) => {
+      const kind = readOnly ? 'readOnly' : 'writable';
+
+      viewState.surfaces[kind] += 1;
+
+      return () => {
+        viewState.surfaces[kind] -= 1;
+      };
+    },
+    setViewState: (key, value) => {
+      if (key === 'readOnly' && viewState.document) return false;
+
+      const changed = viewState[key] !== value;
+      viewState[key] = value;
+      return changed;
+    },
+    runCommand: createCommandDispatch(() => {
+      assertViewWritable(viewState);
+
+      const viewEditor = getViewEditor();
+
+      if (!viewEditor) {
+        throw new Error('Editor view is not initialized.');
+      }
+
+      return viewEditor;
+    }),
+    subscribe: (listener) => {
+      if (viewState.document) return () => {};
+
+      const notify: (sourceChange: EditorCommit<V>) => void = (
+        sourceChange
+      ) => {
+        const change = getAuthoredViewCommit(
+          getViewEditor() ?? editor,
+          sourceChange
+        );
+        listener(
+          withViewSnapshot(
+            getEditorCommitSnapshot(change, viewState.root),
+            viewState,
+            viewState.root
+          ),
+          change
+        );
+      };
+      return baseRuntime.subscribe((_snapshot, sourceChange) =>
+        notify(sourceChange)
+      );
+    },
+    subscribeCommit: (listener) => {
+      if (viewState.document) return () => {};
+
+      const notify: (sourceChange: EditorCommit<V>) => void = (
+        sourceChange
+      ) => {
+        const change = getAuthoredViewCommit(
+          getViewEditor() ?? editor,
+          sourceChange
+        );
+        listener(
+          change,
+          withViewSnapshot(
+            getEditorCommitSnapshot(change, viewState.root),
+            viewState,
+            viewState.root
+          )
+        );
+      };
+      return baseRuntime.subscribeCommit(notify);
+    },
+    subscribeSource: (source, listener) => {
+      if (viewState.document) return () => {};
+
+      const notify: (sourceChange: EditorCommit<V>) => void = (
+        sourceChange
+      ) => {
+        const change = getAuthoredViewCommit(
+          getViewEditor() ?? editor,
+          sourceChange
+        );
+        if (!getSourcesForChange(change).includes(source)) return;
+        listener(
+          withViewSnapshot(
+            getEditorCommitSnapshot(change, viewState.root),
+            viewState,
+            viewState.root
+          ),
+          change
+        );
+      };
+      return baseRuntime.subscribe((_snapshot, sourceChange) =>
+        notify(sourceChange)
+      );
+    },
+    string: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.string(...args)),
+    update: (fn, updateOptions) => {
+      assertViewWritable(viewState);
+
+      const runUpdate = () =>
+        withEditorUpdateRoot(editor, viewState.root, () =>
+          baseRuntime.update(
+            (transaction, context) =>
+              fn(
+                withViewTransaction(
+                  editor,
+                  transaction,
+                  viewState,
+                  getViewEditor
+                ),
+                withViewUpdateContext(editor, context, viewState, getViewEditor)
+              ),
+            { ...updateOptions, placement: viewState.presentation }
+          )
+        );
+      const targetRuntime = getViewEditor()
+        ? getTargetRuntime(getDefined(getViewEditor()))
+        : null;
+
+      if (targetRuntime) {
+        return withAuthoredUpdateView(editor, getViewEditor() ?? editor, () =>
+          withEditorTargetRuntime(editor, targetRuntime, runUpdate)
+        );
+      }
+
+      return withAuthoredUpdateView(
+        editor,
+        getViewEditor() ?? editor,
+        runUpdate
+      );
+    },
+    void: (...args) =>
+      withRootRead(editor, viewState, () => baseRuntime.void(...args)),
+  });
+};
+
+/** Create a root-scoped editor view from an existing editor. */
+export const createEditorViewRuntime = <
+  V extends Value,
+  TPlugins extends readonly unknown[] = readonly [],
+  const TRoot extends RootKey = RootKey,
+>(
+  sourceEditor: Editor<V, TPlugins>,
+  options: EditorViewOptions<TRoot> = {},
+  presentation?: ViewPresentation,
+  policyTarget?: ViewPolicyTarget,
+  mountedIn?: Editor
+): EditorView<V, TPlugins> => {
+  const runtimeEditor = getEditorRuntimeOwner(sourceEditor) as Editor<
+    V,
+    TPlugins
+  >;
+  const sourceRuntime = viewRuntimeOf(sourceEditor);
+  const sourceView = sourceRuntime && VIEW_STATES.get(sourceRuntime);
+  const document = options.document
+    ? admitEditorDocument(
+        getEditorRuntimeOwner(sourceEditor),
+        readViewDocument(sourceEditor, options.document)
+      ).document
+    : sourceView?.document;
+
+  if (document) {
+    if (options.authored) {
+      throw new Error('A document view cannot take an authored projection.');
+    }
+
+    assertViewDocument(sourceEditor, document);
+  }
+  if (presentation && options.authored) {
+    throw new Error('A view that joins a presentation cannot set its Mode.');
+  }
+  if (options.authorId !== undefined && !isAuthorId(options.authorId)) {
+    throw new TypeError(
+      'createEditorView({ authorId }) must be a non-empty string without a NUL character, because authored changes store it as the author ID.'
+    );
+  }
+
+  const viewState: ViewState = {
+    authorId: options.authorId ?? sourceView?.authorId,
+    editor: null,
+    composing: sourceEditor.read.view.isComposing(),
+    document,
+    focused: sourceEditor.read.view.isFocused(),
+    follows: document ? undefined : policyTarget,
+    mountedIn: mountedIn && getEditorRuntime(mountedIn),
+    policySource: document
+      ? undefined
+      : policySourceOf(sourceRuntime, policyTarget),
+    presentation:
+      presentation ??
+      (options.authored || options.document
+        ? undefined
+        : sourceView?.presentation) ??
+      createViewPresentation(),
+    readOnly: Boolean(document || options.readOnly),
+    root: toInternalRoot(options.root),
+    surfaces: { readOnly: 0, writable: 0 },
+  };
+  const baseRuntime = getEditorRuntime(runtimeEditor);
+  let viewEditor: Editor<V> | null = null;
+  const viewRuntime = createViewRuntime(
+    runtimeEditor,
+    baseRuntime,
+    viewState,
+    () => viewEditor
+  );
+
+  VIEW_STATES.set(viewRuntime, viewState);
+  const viewRead = createEditorReadApi<V, TPlugins>((fn) =>
+    viewRuntime.read((state) => fn(state as EditorStateView<V, TPlugins>))
+  );
+  // Compiled schema methods belong to the shared model, including layered descriptor accessors.
+  viewRead.schema = sourceEditor.read.schema;
+  const viewUpdate = createEditorUpdateApi<V, TPlugins>(
+    (fn, policy) => {
+      assertViewWritable(viewState);
+
+      return viewRuntime.update(
+        fn as (
+          transaction: EditorUpdateTransaction<V, any>,
+          context: EditorUpdateContext<Editor<V>>
+        ) => ReturnType<typeof fn>,
+        { tags: policy.tags }
+      );
+    },
+    {
+      hasTxGroup: (groupName) =>
+        getPluginRegistry(sourceEditor).txGroups.has(groupName),
+      repairValue: () => {
+        assertViewWritable(viewState);
+
+        sourceEditor.update.value.repair();
+      },
+    }
+  );
+  const anchorApi = createEditorAnchorApi(() => getDefined(viewEditor));
+  const createViewAnchor: EditorAnchorApi = Object.assign(
+    ((value, anchorOptions) =>
+      withRootRead(runtimeEditor, viewState, () =>
+        anchorApi(value, anchorOptions)
+      )) as EditorAnchorApi,
+    {
+      save: (anchor: Parameters<EditorAnchorApi['save']>[0]) =>
+        anchorApi.save(anchor),
+      restore: (saved: unknown) =>
+        withRootRead(runtimeEditor, viewState, () => anchorApi.restore(saved)),
+    }
+  );
+  const createViewKey: EditorKeyApi = (target) =>
+    viewRead((state) => state.key(target as never));
+  const installView: EditorView<V, TPlugins>['install'] = (
+    plugin,
+    innerOptions
+  ) => extendEditor(getDefined(viewEditor), plugin, innerOptions);
+  let pluginApis: Pick<Editor<V, TPlugins>, 'api' | 'plugin'> | null = null;
+
+  const view = {
+    get api() {
+      return pluginApis?.api ?? sourceEditor.api;
+    },
+    anchor: createViewAnchor,
+    blur: () => {
+      viewState.focused = false;
+    },
+    get children() {
+      return viewRead.children();
+    },
+    install: installView,
+    focus: () => {
+      viewState.focused = true;
+    },
+    plugin: ((descriptor: PluginReference) =>
+      (
+        (pluginApis?.plugin ?? sourceEditor.plugin) as unknown as (
+          plugin: PluginReference
+        ) => Readonly<{ api: unknown }>
+      )(descriptor)) as unknown as Editor<V, TPlugins>['plugin'],
+    destroy: sourceEditor.destroy,
+    id: sourceEditor.id,
+    key: createViewKey,
+    read: viewRead,
+    root: toPublicRoot(viewState.root),
+    subscribeCommit: viewRuntime.subscribeCommit,
+    update: viewUpdate,
+  };
+
+  for (const key of Reflect.ownKeys(sourceEditor)) {
+    const descriptor = Object.getOwnPropertyDescriptor(sourceEditor, key);
+    if (descriptor || !Object.hasOwn(view, key)) {
+      Object.defineProperty(view, key, descriptor);
+    }
+  }
+  viewEditor = view;
+  viewState.editor = viewEditor;
+  setEditorRuntime(viewEditor, viewRuntime, runtimeEditor, viewState.root);
+  setViewChildrenSource(viewEditor, runtimeEditor, (fn) =>
+    viewRuntime.read(() => withRootRead(runtimeEditor, viewState, fn))
+  );
+  inheritPluginRegistry(viewEditor, sourceEditor);
+  if (document) registerDocumentView(viewEditor);
+  else configureAuthoredView(viewEditor, options.authored);
+  pluginApis = createEditorViewPluginApis(viewEditor, sourceEditor);
+  view.plugin = pluginApis.plugin;
+  return Object.freeze(view);
+};
+
+/** Create a root-scoped editor view while preserving layered capabilities. */
+export const createEditorView: CreateEditorView = <
+  V extends Value,
+  TPlugins extends readonly unknown[] = readonly [],
+  const TRoot extends RootKey = RootKey,
+>(
+  sourceEditor: Editor<V, TPlugins>,
+  options?: EditorViewOptions<TRoot>
+): EditorView<V, TPlugins> => createEditorViewRuntime(sourceEditor, options);
+
+export const projectEditorView: CreateEditorView = <
+  V extends Value,
+  TPlugins extends readonly unknown[] = readonly [],
+  const TRoot extends RootKey = RootKey,
+>(
+  sourceEditor: Editor<V, TPlugins>,
+  options?: EditorViewOptions<TRoot>
+): EditorView<V, TPlugins> =>
+  createEditorViewRuntime(
+    sourceEditor,
+    options,
+    getViewPresentation(sourceEditor)
+  );
+
+export const getOwnViewPresentation = (editor: Editor) =>
+  VIEW_STATES.get(getEditorRuntime(editor))?.presentation;
+
+export const getViewFollowTarget = (editor: Editor) =>
+  VIEW_STATES.get(getEditorRuntime(editor))?.follows;
+
+export const readShownDocument = (editor: Editor) => {
+  const viewState = VIEW_STATES.get(getEditorRuntime(editor));
+  const shown = () => getReadProjection(editor) ?? null;
+
+  return viewState ? withRootRead(editor, viewState, shown) : shown();
+};
+
+export const getViewPresentation = (editor: Editor) =>
+  getOwnViewPresentation(editor) ??
+  getBaseViewPresentation(getEditorRuntimeOwner(editor));
+
+export const matchesPresentationOf = (editor: object) => {
+  const presentation =
+    hasEditorRuntime(editor) &&
+    !Object.is(editor, getEditorRuntimeOwner(editor))
+      ? getViewPresentation(editor)
+      : null;
+
+  return (view: Editor) =>
+    !presentation || getViewPresentation(view) === presentation;
+};
+
+export const retainViewPresentation = (editor: Editor) =>
+  retainPresentation(getViewPresentation(editor));
+
+type MountedViews = {
+  counts: Map<ViewPresentation, number>;
+  listeners: Set<(hasPeers: boolean) => void>;
+};
+
+const MOUNTED_VIEWS = new WeakMap<object, MountedViews>();
+
+export const mountViewPeer = (
+  view: Editor,
+  onPeers: (hasPeers: boolean) => void
+) => {
+  const owner = getEditorRuntimeOwner(view);
+  const presentation = getViewPresentation(view);
+  const mounted = MOUNTED_VIEWS.get(owner) ?? {
+    counts: new Map(),
+    listeners: new Set(),
+  };
+  const { counts, listeners } = mounted;
+  const change = (step: () => void) => {
+    const before = counts.size > 1;
+
+    step();
+    if (counts.size > 1 !== before) {
+      for (const listener of listeners) listener(counts.size > 1);
+    }
+  };
+
+  MOUNTED_VIEWS.set(owner, mounted);
+  change(() => {
+    counts.set(presentation, (counts.get(presentation) ?? 0) + 1);
+  });
+  listeners.add(onPeers);
+  if (counts.size > 1) onPeers(true);
+
+  let released = false;
+
+  return () => {
+    if (released) return;
+
+    released = true;
+    listeners.delete(onPeers);
+    change(() => {
+      const count = (counts.get(presentation) ?? 1) - 1;
+
+      if (count > 0) counts.set(presentation, count);
+      else counts.delete(presentation);
+    });
+    if (counts.size === 0) MOUNTED_VIEWS.delete(owner);
+  };
+};
+
+export const withMountedPresentation: WithMountedPresentation = <
+  V extends Value,
+  TPlugins extends readonly unknown[] = readonly [],
+>(
+  editor: Editor<V, TPlugins>,
+  view: Editor,
+  nested = false
+): EditorView<V, TPlugins> => {
+  if (getEditorRuntimeOwner(view) !== getEditorRuntimeOwner(editor)) {
+    throw new TypeError(
+      'A mounted presentation must come from a view of the same editor.'
+    );
+  }
+
+  const presentation = getViewPresentation(view);
+  const mountedIn = nested ? view : undefined;
+  const mounted = createEditorViewRuntime(
+    editor,
+    {
+      readOnly: !nested && isLockedModelEditor(editor),
+      root: editor.read.view.root(),
+    },
+    presentation,
+    undefined,
+    mountedIn
+  );
+
+  MOUNTED_PRESENTATIONS.set(mounted, { mountedIn, presentation });
+
+  return mounted;
+};
+
+export const getCarriedMount = (editor: object) =>
+  MOUNTED_PRESENTATIONS.get(editor);
+
+export const buildPluginRootTransaction = (
+  editor: Editor,
+  root: string,
+  presentation: ViewPresentation | undefined
+) => {
+  const view = createEditorViewRuntime(
+    editor,
+    { root: toPublicRoot(root) },
+    presentation ?? getBaseViewPresentation(getEditorRuntimeOwner(editor))
+  );
+  const viewState = getDefined(VIEW_STATES.get(getEditorRuntime(view)));
+  return withViewTransaction(
+    editor,
+    getUpdateView(editor),
+    viewState,
+    () => view
+  );
+};

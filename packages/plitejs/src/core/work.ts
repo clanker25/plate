@@ -1,0 +1,317 @@
+/**
+ * The work core does, so a test can check that a key's work follows the edit
+ * and not the size of the document it edits.
+ *
+ * @internal
+ */
+export type CoreWork = {
+  /** Positions mapped between the stored and projected documents. */
+  adapterMappings: number;
+  admittedChanges: number;
+  /** Sequence nodes built. */
+  allocatedNodes: number;
+  keptRedoFallbacks: number;
+  /** Anchor scopes entered on a projected document. */
+  anchorScopes: number;
+  /** Projected documents adopted as the schema's validated baseline. */
+  baselines: number;
+  bookCopies: number;
+  changeValueReads: number;
+  /** Change builders started on a projected document. */
+  builders: number;
+  /** Nodes the canonical pass opened past its check that a node is unchanged. */
+  canonicalNodes: number;
+  /**
+   * Undo or redo steps history mapped by position because the carried
+   * projection refused them, or dropped because no map worked.
+   */
+  carriedFallbacks: number;
+  /** Lines a carried projection rebuilt. */
+  carriedLines: number;
+  /** Change sections a carried projection read. */
+  carriedSections: number;
+  /** Tokens a carried projection read, a letter each. */
+  carriedTokens: number;
+  clampWrites: number;
+  collapsedBoundaryVisits: number;
+  composedProjectionSections: number;
+  contentRootOwnerScans: number;
+  coverageCandidateChecks: number;
+  coverageQueries: number;
+  coverageRootKeyBuilds: number;
+  /** Sequence slots copied, each node at its width. */
+  copiedSlots: number;
+  encodedTokens: number;
+  /** Incremental paths a collaboration binding refused for a fallback. */
+  fallbacks: number;
+  /**
+   * Pieces, facts and sections a history crossing visited, which follow the
+   * two changes it crosses and not the document.
+   */
+  crossingPieces: number;
+  crossedSteps: number;
+  /** Fact positions a draft mapped through a step, one per fact it wrote or a step dropped. */
+  factPositions: number;
+  factAllocations: number;
+  factedReplays: number;
+  /** Former-place lookups for a value a node carried into a new place. */
+  formerPlaceCalls: number;
+  /** Steps, landed nodes and pieces those lookups examined. */
+  formerPlaceVisits: number;
+  /** Top-level blocks the authored stored-block index took in or let go. */
+  heldBlocks: number;
+  /** Values a settlement's worklist took from its stack to try a shower for. */
+  contenderVisits: number;
+  /** Reads waiting on an incarnation a commit decided, which settlement reached. */
+  decidedReads: number;
+  /** Values, waiting holders and links a settlement's group search visited. */
+  groupHolderVisits: number;
+  /** Owners a settlement tested for a pending mark to judge whether their root waits. */
+  ownerChecks: number;
+  /** Content roots a settlement judged again for whether their owners wait. */
+  rootJudgments: number;
+  /** Element reads a settlement record took in or let go. */
+  shownReadMoves: number;
+  /** Settle stages past the quiet gate, each of which moved the settlement record. */
+  shownSettles: number;
+  /** Root spare records a settlement record moved. */
+  spareRecordMoves: number;
+  /** Roots a settlement moved the index of generated value holders to. */
+  holderRootMoves: number;
+  /** Nodes an index was built from, out of a whole array. */
+  indexedNodes: number;
+  /** Nodes a moved range's landing read to find where its payload stood. */
+  landingSources: number;
+  /** Bookmarks a step mapped. */
+  mappedBookmarks: number;
+  /** Plugin update method calls that reached the dispatcher. */
+  pluginDispatches: number;
+  /** Nodes judged for the values their place can hold. */
+  placeChecks: number;
+  /** Children of two reads of an element compared by identity to find the reads a move changed. */
+  readChildScans: number;
+  /** Candidate roots the orphan judge counted owners for. */
+  ownedRootsJudged: number;
+  /** Roots' ownership indexes the orphan judge fetched. */
+  ownerIndexReads: number;
+  /** Ownership indexes built from a whole root. */
+  ownershipBuilds: number;
+  /** Projected roots indexed because the projection gave no index. */
+  projectedIndexes: number;
+  /** Reads of the whole change from the stored document to the projected. */
+  projectionChanges: number;
+  /** Roots a collaboration binding reconciled whole by diffing them. */
+  reconciles: number;
+  /** Runs of tokens a step recorded as relocated from another place. */
+  relocations: number;
+  /** Mapping segments whose change was scanned for slices that may relocate nodes. */
+  relocationReads: number;
+  /** Nodes a mapping bound as they landed. */
+  landedNodeBinds: number;
+  /** Spans of typed letters a draft carried through one of its steps. */
+  letterMarks: number;
+  /** Root snapshots built from a root's current children. */
+  rootSnapshots: number;
+  rootVisits: number;
+  /** Elements and root records a room's read examined for unbuilt spares. */
+  spareReads: number;
+  /** Document tokens and nodes phase 1's crossing rule read to judge a change. */
+  ruleTokens: number;
+  /** Change sections read to map a position or compose a change. */
+  sectionsWalked: number;
+  /** Document tokens, written tokens and cut elements a history replay's walk of a change visited. */
+  replayWalkVisits: number;
+  /** Record ids a local commit looked up among the ids its roots' imports built spares from. */
+  spareIdChecks: number;
+  /** Snapshot indexes built over a root's children. */
+  snapshotIndexes: number;
+  identityClaimsExamined: number;
+  identityPagesExamined: number;
+  identityLocationsRepaired: number;
+  identityDirectoryNodesCopied: number;
+  identityMembershipsTouched: number;
+  identityTransitions: number;
+  identityMembersExamined: number;
+  /** Passes over a whole root, or over a run of changed children wider than a page both before and after the change. */
+  wholeListPasses: number;
+  /** Projected roots a frame installs as its snapshot's roots. */
+  snapshotRoots: number;
+  /** Sequence items a walk visited in order. */
+  walkedSlots: number;
+  /** Nodes of indexed lists read back as one whole array. */
+  wholeReadNodes: number;
+  /** Elements a settlement judged as owners of a content root holding a holder. */
+  rootOwnerChecks: number;
+  /** Roots whose owner elements `read.roots()` read, on a root's first read or after its children changed. */
+  rootOwnerReads: number;
+  /** Roots `read.roots()` placed, on its first read or after an owner moved or a root came or went. */
+  orderedRoots: number;
+  /** Mounted views a root's target pick asked whether an `Editable` shows them. */
+  rootTargetChecks: number;
+  historyHeadRootReads: number;
+  ownershipIndexVisits: number;
+  ownerPathWalks: number;
+  shownWritableViewChecks: number;
+  historyGateRootComparisons: number;
+  /** Yjs children a collaboration binding enumerated. */
+  yjsChildrenRead: number;
+  yjsItemSteps: number;
+  /** Lines the Yjs import's join search read beside a line the batch hid. */
+  yjsJoinSiblingsRead: number;
+  /** Changed lines a Yjs import built from the letters each text kept. */
+  yjsLetterLines: number;
+  /** Mark records a collaboration binding visits. */
+  yjsMarkRecordsVisited: number;
+  /** Canonical record texts built from a record's owned JSON on first read. */
+  recordTexts: number;
+  /** Changed lines a Yjs import diffed by value, since the letters could not place them. */
+  yjsValueDiffLines: number;
+  /** Retypes the authored recorder lowered to a replacement of the node. */
+  retypeLowerings: number;
+  /** Changes the authored recorder applied to lower a retype to a replacement. */
+  retypeLoweringApplies: number;
+  /** Unique properties read to judge whether a retype crosses a unique target. */
+  uniqueCrossingChecks: number;
+  /** Changed nodes a commit read to move the index of unique values. */
+  uniqueHolderReads: number;
+  /** Elements the index of unique values was built from. */
+  uniqueIndexedNodes: number;
+  /** Groups of generated values a settlement read. */
+  valueGroupReads: number;
+  /** Elements read for the generated values they hold or show. */
+  valueHolderReads: number;
+  subscriberVisits: number;
+  selectorVisits: number;
+  /** Values a selector result comparison charged against its limit. */
+  selectorResultValues: number;
+};
+
+/**
+ * The counts themselves, which a sequence bumps in place on its hot path.
+ *
+ * @internal
+ */
+export const coreWork: CoreWork = {
+  adapterMappings: 0,
+  admittedChanges: 0,
+  allocatedNodes: 0,
+  keptRedoFallbacks: 0,
+  anchorScopes: 0,
+  baselines: 0,
+  bookCopies: 0,
+  changeValueReads: 0,
+  builders: 0,
+  canonicalNodes: 0,
+  carriedFallbacks: 0,
+  carriedLines: 0,
+  carriedSections: 0,
+  carriedTokens: 0,
+  clampWrites: 0,
+  collapsedBoundaryVisits: 0,
+  composedProjectionSections: 0,
+  contentRootOwnerScans: 0,
+  coverageCandidateChecks: 0,
+  coverageQueries: 0,
+  coverageRootKeyBuilds: 0,
+  copiedSlots: 0,
+  encodedTokens: 0,
+  fallbacks: 0,
+  crossingPieces: 0,
+  crossedSteps: 0,
+  factPositions: 0,
+  factAllocations: 0,
+  factedReplays: 0,
+  formerPlaceCalls: 0,
+  formerPlaceVisits: 0,
+  heldBlocks: 0,
+  contenderVisits: 0,
+  decidedReads: 0,
+  groupHolderVisits: 0,
+  ownerChecks: 0,
+  rootJudgments: 0,
+  shownReadMoves: 0,
+  shownSettles: 0,
+  spareRecordMoves: 0,
+  holderRootMoves: 0,
+  indexedNodes: 0,
+  landingSources: 0,
+  mappedBookmarks: 0,
+  pluginDispatches: 0,
+  placeChecks: 0,
+  readChildScans: 0,
+  ownedRootsJudged: 0,
+  ownerIndexReads: 0,
+  ownershipBuilds: 0,
+  projectedIndexes: 0,
+  projectionChanges: 0,
+  reconciles: 0,
+  relocations: 0,
+  relocationReads: 0,
+  landedNodeBinds: 0,
+  letterMarks: 0,
+  rootSnapshots: 0,
+  rootVisits: 0,
+  spareReads: 0,
+  spareIdChecks: 0,
+  ruleTokens: 0,
+  sectionsWalked: 0,
+  replayWalkVisits: 0,
+  snapshotIndexes: 0,
+  identityClaimsExamined: 0,
+  identityPagesExamined: 0,
+  identityLocationsRepaired: 0,
+  identityDirectoryNodesCopied: 0,
+  identityMembershipsTouched: 0,
+  identityTransitions: 0,
+  identityMembersExamined: 0,
+  wholeListPasses: 0,
+  snapshotRoots: 0,
+  walkedSlots: 0,
+  wholeReadNodes: 0,
+  rootOwnerChecks: 0,
+  rootOwnerReads: 0,
+  orderedRoots: 0,
+  rootTargetChecks: 0,
+  historyHeadRootReads: 0,
+  ownershipIndexVisits: 0,
+  ownerPathWalks: 0,
+  shownWritableViewChecks: 0,
+  historyGateRootComparisons: 0,
+  yjsChildrenRead: 0,
+  yjsItemSteps: 0,
+  yjsJoinSiblingsRead: 0,
+  yjsLetterLines: 0,
+  yjsMarkRecordsVisited: 0,
+  recordTexts: 0,
+  yjsValueDiffLines: 0,
+  retypeLowerings: 0,
+  retypeLoweringApplies: 0,
+  uniqueCrossingChecks: 0,
+  uniqueHolderReads: 0,
+  uniqueIndexedNodes: 0,
+  valueGroupReads: 0,
+  valueHolderReads: 0,
+  subscriberVisits: 0,
+  selectorVisits: 0,
+  selectorResultValues: 0,
+};
+
+/** @internal */
+export const countCoreWork = (kind: keyof CoreWork, amount = 1) => {
+  coreWork[kind] += amount;
+};
+
+/** @internal */
+export const readCoreWork = (): Readonly<CoreWork> => ({ ...coreWork });
+
+/** @internal */
+export const resetCoreWork = () => {
+  for (const kind of Object.keys(coreWork) as Array<keyof CoreWork>) {
+    coreWork[kind] = 0;
+  }
+};
+
+/** @internal */
+export const restoreCoreWork = (work: Readonly<CoreWork>) => {
+  Object.assign(coreWork, work);
+};

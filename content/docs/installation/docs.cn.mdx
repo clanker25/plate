@@ -1,0 +1,24 @@
+---
+title: 本地文档
+description: 让编码 agent 读取随已安装版本发布的 Plate 文档。
+---
+
+每个 `platejs` 版本都在 `node_modules/platejs/dist/docs/` 中附带 Markdown
+格式的文档。这些文件与已安装的版本一致，编码 agent 读到的是应用实际使用的
+API，而不是它记忆中的 API。
+
+## 让 agent 读取文档
+
+把下面这段内容加入应用的 `AGENTS.md`，或你的编码工具读取的规则文件：
+
+```md prompt
+This app uses Plate (`platejs`), whose API differs from older versions you
+may remember. Before you write editor code, read
+`node_modules/platejs/dist/docs/llms.txt` and the pages it lists. They match
+the installed version.
+```
+
+`llms.txt` 写明已安装的版本，并列出每个页面及其描述。页面中的
+`/docs/<path>` 链接在 `llms.txt` 列出该页面时，对应
+`node_modules/platejs/dist/docs/` 中的 `<path>.md` 文件。在 monorepo 中，
+请让这段内容指向应用解析 `platejs` 时使用的 `node_modules` 文件夹。

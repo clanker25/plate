@@ -1,0 +1,263 @@
+---
+title: 数学公式
+docs:
+  - route: /docs/components/math
+    title: 公式元素
+  - route: /docs/components/equation-toolbar-button
+    title: 公式工具栏按钮
+  - route: https://pro.platejs.org/docs/components/math
+    title: 公式元素
+  - route: https://pro.platejs.org/docs/components/equation-toolbar-button
+    title: 公式工具栏按钮
+---
+
+<ComponentPreview name="equation-demo" />
+
+<PackageInfo>
+
+## 功能特性
+
+- 支持LaTeX语法编写复杂数学表达式
+- 提供行内公式和块级公式两种格式
+- 使用KaTeX实时渲染公式
+- 便捷的公式编辑和导航功能
+- HTML 复制和粘贴保留 TeX，包括从 KaTeX 页面和维基百科复制的公式
+
+编辑弹出框保留本地草稿。按 Enter 或点击 Done 后，以一个撤销批次提交；
+按 Escape 或关闭弹出框则丢弃草稿，不写入文档。外部公式更新会替换当前草稿。
+
+</PackageInfo>
+
+## 套件使用
+
+<Steps>
+
+### 安装
+
+最快捷的方式是使用`MathKit`套件，它包含预配置的`EquationPlugin`和`InlineEquationPlugin`、对应的 `$...$` 与 `$$` input rules，以及[Plate UI](/docs/installation/plate-ui)组件。
+
+<ComponentSource name="math" />
+
+- [`EquationElement`](/docs/components/math): 渲染块级公式元素
+- [`InlineEquationElement`](/docs/components/math): 渲染行内公式元素
+
+### 添加套件
+
+将套件添加到插件中:
+
+```tsx
+import { createEditor } from 'platejs/react';
+import { MathKit } from '@/components/editor/math';
+
+const editor = createEditor({
+  plugins: [
+    // ...其他插件,
+    ...MathKit,
+  ],
+});
+```
+
+</Steps>
+
+## 分层归属
+
+| 层 | 归属 | 作用 |
+|----|------|------|
+| `platejs/math` | 包 | 导出基础公式插件族、其 Markdown `math` 与 `inlineMath` 映射，以及 `MathRules`。 |
+| `platejs/math/react` | 包 | 导出 React 公式插件描述符。 |
+| `math` | Registry | 添加带 input rules 的块级与行内 React 插件，以及可编辑的公式元素。 |
+| `math-static` | Registry | 添加用于只读渲染的静态公式元素。 |
+| `equation-toolbar-button` | Registry UI | 从工具栏插入行内公式。 |
+| `platejs/markdown` | 包 | 当 `MarkdownPlugin` 配置了 `remark-math` 时，运行公式插件的 Markdown 映射。 |
+| `platejs/docx/export` | 包 | 将公式导出为 Word 公式。参阅 [DOCX](/docs/docx)。 |
+
+`platejs/math` 和 `platejs/math/react` 不加载 KaTeX。`math` 和 `math-static` 组件以及 `platejs/docx/export` 会导入 `katex`，因此在运行其中任何一个的地方安装 `katex`。
+
+块级公式和行内公式共享 `EquationElement` 结构，但它们是不同的节点类型，插件名称也不同。
+
+## 手动配置
+
+<Steps>
+
+### 安装
+
+```bash
+npm install platejs katex@0.16.22 lucide-react react-textarea-autosize
+```
+
+`math` 和 `math-static` 组件会导入 KaTeX 样式表 `katex/dist/katex.min.css`，以及 `lucide-react` 的图标。`math` 还会导入 `react-textarea-autosize` 作为公式源码输入框。
+
+`math-static` 导入了 KaTeX 样式表，因此只能在能加载 CSS 导入的打包工具中运行。纯 Node 遇到该导入会抛出错误。只转换公式、不渲染公式的 Node 进程使用 `platejs/math` 中的 `BaseEquationPlugin` 和 `BaseInlineEquationPlugin`。
+
+### 添加插件
+
+在创建编辑器时将公式插件包含到Plate插件数组中。
+
+```tsx
+import { MathRules } from 'platejs/math';
+import { EquationPlugin, InlineEquationPlugin } from 'platejs/math/react';
+import { createEditor } from 'platejs/react';
+
+const editor = createEditor({
+  plugins: [
+    // ...其他插件,
+    EquationPlugin,
+    InlineEquationPlugin,
+  ],
+});
+```
+
+### 配置插件
+
+使用自定义组件和 input rules 配置插件来渲染公式元素。
+
+```tsx
+import { MathRules } from 'platejs/math';
+import { EquationPlugin, InlineEquationPlugin } from 'platejs/math/react';
+import { createEditor } from 'platejs/react';
+import { EquationElement, InlineEquationElement } from '@/components/editor/math';
+
+const editor = createEditor({
+  plugins: [
+    // ...其他插件,
+    InlineEquationPlugin.configure({
+      component: InlineEquationElement,
+      inputRules: [MathRules.markdown({ variant: '$' })],
+    }),
+    EquationPlugin.configure({
+      component: EquationElement,
+      inputRules: [MathRules.markdown({ on: 'break', variant: '$$' })],
+    }),
+  ],
+});
+```
+
+- `.configure({ component })`：使用
+  [`EquationElement`](/docs/components/math) 渲染块级公式，使用
+  [`InlineEquationElement`](/docs/components/math) 渲染行内公式。
+- `MathRules.markdown({ variant: '$' })`：启用行内公式 Markdown 快捷输入。
+- `MathRules.markdown({ variant: '$$', on: 'break' | 'match' })`：启用块级公式 Markdown 快捷输入，并显式选择提交时机。
+
+完整运行时模型请参阅 [Plugin Input Rules](/docs/plugin-input-rules)。
+
+### 添加工具栏按钮
+
+您可以在[工具栏](/docs/toolbar)中添加[`EquationToolbarButton`](/docs/components/equation-toolbar-button)来插入公式。
+
+</Steps>
+
+## 渲染
+
+Registry 组件使用 KaTeX 渲染公式，并在弹出框中编辑源码。
+
+| 场景 | 行为 |
+|------|------|
+| 可编辑块级公式 | `math` 使用 display mode 选项调用 `katex.render`。 |
+| 可编辑行内公式 | `math` 以 inline mode 调用 `katex.render`，公式与周围文字同样大小。选中行内 void 节点且选区折叠时打开弹出框。 |
+| 弹出框输入 | 保留本地草稿。外部公式更新会替换该草稿。 |
+| `Enter` 或 Done | 以一个撤销批次提交草稿并关闭输入框。输入法组合中的 Enter 不会提交。 |
+| `Escape` 或在外部关闭 | 丢弃草稿，不写入文档。 |
+| 行内公式左右边缘的方向键 | 提交草稿，并将选区移出行内公式。 |
+| 静态渲染 | `math-static` 以与 `math` 相同的模式调用 `katex.renderToString`。 |
+
+Registry UI 中的 KaTeX 配置为 `throwOnError: false`、`strict: 'warn'` 和 `trust: false`。
+
+## Markdown
+
+Markdown 映射由公式插件负责。`BaseEquationPlugin` 将 `equation` 映射为 `math` 节点，`BaseInlineEquationPlugin` 将 `inlineEquation` 映射为 `inlineMath`。当 `remark-math` 位于 `platejs/markdown` 的 `MarkdownPlugin` 的 remark 插件中时，`MarkdownPlugin` 会运行这些映射；registry 的 `MarkdownKit` 就是这样配置的。
+
+```mdx
+Inline $x+1$ math
+```
+
+```mdx
+$$
+x+1
+$$
+```
+
+行内公式解析为 `inlineEquation`，块级公式解析为 `equation`。序列化时从 `latex` 写回相同的 Markdown 公式结构。
+
+## HTML
+
+HTML 映射由公式插件负责。`editor.api.html.serialize` 和复制会把每个公式写成一个元素，TeX 保存在 `data-editor-equation-latex` 中。元素的文本是放在美元符号之间的 TeX，所以只读取文本的应用也能拿到源码。
+
+```html
+<p>Area <span data-editor-equation data-editor-equation-latex="x^2">$x^2$</span> units</p>
+<div data-editor-equation="block" data-editor-equation-latex="E=mc^2">$$E=mc^2$$</div>
+```
+
+粘贴和 `editor.api.html.parse` 从第一个含有 TeX 的来源读取 TeX。
+
+| 粘贴的 HTML | Plate 读取 | 结果 |
+|-------------|------------|------|
+| Plate 的公式元素 | `data-editor-equation-latex` | 相同的公式。`data-editor-equation="block"` 得到 `equation`，否则得到 `inlineEquation`。 |
+| 带有 TeX 注释的 KaTeX 默认输出，例如从加载了 KaTeX copy-tex 扩展的页面复制的内容 | 其 MathML 中的 `application/x-tex` 注释 | 带有该 TeX 的公式，不含 KaTeX 绘制的字形。 |
+| 维基百科的公式 | 每个 `math` 元素 `data-mw` 属性中的 TeX | 带有该 TeX 的公式。 |
+| 其他带 `application/x-tex` 注释的 MathML | 该注释 | 带有该 TeX 的公式。 |
+| 没有 TeX 的 MathML，例如在 Chrome 中从未加载 copy-tex 的页面复制的 KaTeX 输出（Chrome 会省略隐藏的注释） | Plate 根据 MathML 重建的 TeX | 带有该 TeX 的公式，不含 KaTeX 绘制的字形。MathML 没有 TeX 形式时，Plate 会丢弃它并给出一条诊断，KaTeX 绘制的字形则作为文本保留。重建丢失了 TeX 无法保存的呈现信息（例如颜色、尺寸、间距或括号的伸缩）时，解析会给出 warning。重建在两个写出相同 MathML 但绘制不同的命令中选了一个（例如 `\mathcal` 和 `\mathscr`）时，解析也会给出 warning。每个公式只有一条 warning，其中列出每一处损失和选择。 |
+| 旁边有隐藏绘制、且绘制把字母写成文本的 MathML，例如 MathJax 2 的 CHTML 输出 | 不读取 | 绘制出的字母，作为文本。Plate 会丢弃 MathML 并给出一条诊断，因此在默认的 `lossPolicy: 'reject'` 下，`editor.api.html.parse` 会失败。 |
+| 没有 TeX 形式的 MathML，例如 `mlongdiv` 或 `merror` | 不读取 | 丢弃，并给出一条指明该元素的 [HTML 诊断](/docs/html#results-and-diagnostics)。在默认的 `lossPolicy: 'reject'` 下，`editor.api.html.parse` 会失败。 |
+| 不含 MathML 的 KaTeX 输出（`output: 'html'`） | 不读取 | KaTeX 绘制的文本。 |
+
+带 `display="block"` 的公式成为 `equation`，并拆分所在段落。在列表项或标题中，它成为 `inlineEquation`，因此列表保留原有的项和编号，标题仍是一个标题。当 `IndentPlugin` 的目标包含公式时，列表项第一个段落之后的块级公式与该位置的其他块一样，位于该项下一级。代码块中的公式会变成它绘制出的文本，不保留 TeX。解析会报告这一损失，因此在默认的 `lossPolicy: 'reject'` 下，`editor.api.html.parse` 会失败；丢失了呈现信息的重建也会报告它的 warning。没有 TeX 形式的公式会连同它的诊断一起从代码中移除。Plate 会移除公式外的链接并给出一条 warning，因为链接只能包含文本。链接中的其他文本留在原位，但不再带有链接。
+
+只有安装了公式插件的编辑器才读取公式标记。在 `math` 元素中，MathML 元素经过与 HTML 元素相同的安全检查，会去掉所有 URL 属性，Plate 会移除其中的 HTML 或 SVG。没有公式插件的编辑器会丢弃粘贴的公式。
+
+只安装 `BaseInlineEquationPlugin` 时，所有粘贴的公式都成为 `inlineEquation`。只安装 `BaseEquationPlugin` 时，块级公式成为 `equation`。Plate 会丢弃行内公式，以及列表项或标题中的块级公式，并给出一条诊断。被丢弃的 KaTeX 公式会把它绘制的字形作为文本留下。
+
+## Plate Plus
+
+<ComponentPreviewPro name="equation-pro" />
+
+## 插件
+
+### `EquationPlugin`
+
+用于块级公式元素的插件。
+
+### `InlineEquationPlugin`
+
+用于行内公式元素的插件。
+
+## 转换方法
+
+### `editor.plugin(BaseEquationPlugin).update.insert`
+
+<API name="editor.plugin(BaseEquationPlugin).update.insert">
+<APIParameters>
+  <APIItem name="props" type="NodeProps<BlockEquationElement>" optional>
+    公式节点属性
+  </APIItem>
+  <APIItem name="options" type="NodeInsertNodesOptions" optional>
+    标准节点插入选项，例如 `at` 和 `select`
+  </APIItem>
+</APIParameters>
+</API>
+
+### `editor.plugin(BaseInlineEquationPlugin).update.insert`
+
+插入一个行内公式。
+
+<API name="editor.plugin(BaseInlineEquationPlugin).update.insert">
+<APIParameters>
+<APIItem name="input" type="object" optional>
+  <APIItem name="latex" type="string" optional>
+    要插入的LaTeX表达式。如未提供则使用当前选中文本。
+  </APIItem>
+</APIItem>
+<APIItem name="options" type="NodeInsertNodesOptions" optional>
+  标准节点插入选项，例如 `at` 和 `select`
+</APIItem>
+</APIParameters>
+</API>
+
+## 类型定义
+
+### `EquationElement`
+
+```typescript
+import type { EquationElement } from 'platejs/math';
+```
+
+`EquationElement` 是从块级和行内公式插件 schema 派生的联合类型。

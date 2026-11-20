@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "incremental": false,
+    "noEmit": false,
+    "outDir": "../.turbo/entrypoint-types/standard-basic-nodes",
+    "rootDir": "../src",
+    "sourceMap": false,
+    "tsBuildInfoFile": "../.turbo/entrypoint-types/standard-basic-nodes.tsbuildinfo"
+  },
+  "exclude": [
+    "../src/**/*.spec.*",
+    "../src/**/*.test.*",
+    "../src/**/*-contract.*",
+    "../src/**/__tests__/**"
+  ],
+  "extends": "../tsconfig.json",
+  "include": ["../src/features/basic-nodes/**/*"],
+  "references": [
+    {
+      "path": "./core.json"
+    }
+  ]
+}

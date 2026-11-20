@@ -1,0 +1,39 @@
+import { notFound } from 'next/navigation';
+import { NextResponse, type NextRequest } from 'next/server';
+
+import {
+  getAbsoluteUrl,
+  getPlateLLMPageMarkdownFromPage,
+  stripMarkdownSuffixFromSlug,
+} from '@/lib/llm';
+import { getPlateLLMSource } from '@/lib/llm-source';
+import { hrefWithLocale } from '@/lib/withLocale';
+
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ slug?: string[] }> }
+) {
+  const { slug } = await params;
+  const pageSlug = stripMarkdownSuffixFromSlug(slug);
+  const source = getPlateLLMSource();
+  const page = source.getPage(pageSlug, 'cn') ?? source.getPage(pageSlug, 'en');
+
+  if (!page) {
+    notFound();
+  }
+
+  const content = await getPlateLLMPageMarkdownFromPage({
+    docUrl: getAbsoluteUrl(hrefWithLocale(page.url, 'cn')),
+    page,
+  });
+
+  return new NextResponse(content, {
+    headers: {
+      'Content-Type': 'text/markdown; charset=utf-8',
+    },
+  });
+}
+
+export function generateStaticParams() {
+  return [{ slug: [] }];
+}

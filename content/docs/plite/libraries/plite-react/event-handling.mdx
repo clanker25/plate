@@ -1,0 +1,91 @@
+---
+title: "Plite React Event Handling"
+description: "Customize Editable browser events without replacing Plite's default editing runtime."
+---
+
+`Editable` owns the default browser event handlers for rich-text editing,
+including copy, paste, drop, keyboard, native input, selection, focus, and drag
+events.
+
+Pass event handlers to `Editable` when app UI needs to run before Plite's
+default behavior.
+
+Use [Editing Behavior](../../concepts/15-editing-behavior) when the behavior
+belongs in transactions or a typed plugin command handler instead of one
+`Editable` event prop.
+
+## Handler return values
+
+Handler return values control whether Plite continues with its own handling:
+
+- Return `true` to mark the event handled and skip Plite's default handler.
+- Return `false` to force Plite's default handler to run.
+- Return nothing to let Plite continue unless the event is default-prevented or
+  propagation-stopped.
+
+```tsx
+import type { DragEvent, MouseEvent } from "react";
+import { Editable } from "plitejs/react";
+
+const MyEditor = () => {
+  const onClick = (event: MouseEvent<HTMLDivElement>) => {
+    trackEditorClick(event);
+
+    // Plite runs its click handler unless this handler prevents default,
+    // stops propagation, or returns true.
+  };
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!isAppOwnedDrop(event)) return false;
+
+    insertAppOwnedDrop(event);
+
+    return true;
+  };
+
+  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+    annotateDragPayload(event);
+
+    return false;
+  };
+
+  return (
+    <Editable onClick={onClick} onDrop={onDrop} onDragStart={onDragStart} />
+  );
+};
+```
+
+## Editor-aware handlers
+
+Every handler gets an `EditableHandlerContext` after its event, whose `editor`
+is the view whose editable runs it, such as a content root's. The context of
+`onDOMBeforeInput` also carries the input's `inputType`, `data` and target
+`selection`:
+
+```tsx
+<Editable
+  onDOMBeforeInput={(event, { editor, inputType }) => {
+    if (inputType !== "formatBold") return false;
+
+    editor.update.marks.toggle("bold");
+
+    return true;
+  }}
+  onKeyDown={(event, { editor }) => {
+    if (!(event.metaKey && event.key === "k")) return false;
+
+    editor.update((tx) => {
+      tx.text.insert("link");
+    });
+
+    return true;
+  }}
+/>
+```
+
+In a content root's editable, the platform's undo and redo keys (Mod+Z and
+Mod+Shift+Z, and Ctrl+Y outside Apple platforms) never reach `onKeyDown`,
+because the editor replays history first. Shift with an arrow key skips it too,
+because the editor extends the selection first, unless the root's structure is
+a set, as a board's is. Every other key reaches `onKeyDown` as it does in the
+main editable.

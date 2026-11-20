@@ -1,0 +1,153 @@
+---
+title: Slash Command
+docs:
+  - route: https://pro.platejs.org/docs/examples/slash-command
+    title: Plus
+  - route: /docs/combobox
+    title: Combobox
+  - route: /docs/components/slash
+    title: Slash Nodes
+---
+
+<ComponentPreview name="slash-command-demo" />
+
+<PackageInfo>
+
+## Features
+
+- Quick access to various editor commands
+- Triggered by `/` character
+- Keyboard navigation and filtering
+- Customizable command groups and options
+
+</PackageInfo>
+
+## Kit usage
+
+<Steps>
+
+### Installation
+
+The fastest way to add slash command functionality is with the `SlashKit`, which includes a pre-configured `SlashPlugin` with its [Plate UI](/docs/installation/plate-ui) popup.
+
+<ComponentSource name="slash" />
+
+- [`SlashCombobox`](/docs/components/slash): Renders the slash command popup with predefined options
+
+### Add kit
+
+```tsx
+import { createEditor } from 'platejs/react';
+import { SlashKit } from '@/components/editor/slash';
+
+const editor = createEditor({
+  plugins: [
+    // ...otherPlugins,
+    ...SlashKit,
+  ],
+});
+```
+
+</Steps>
+
+## Manual usage
+
+<Steps>
+
+### Installation
+
+```bash
+npm install platejs
+npx shadcn@latest add @plate/slash
+```
+
+### Add plugins
+
+The copied `slash` file defines `SlashPlugin`, which holds the trigger policy and the items your app adds. Mount the popup in its `afterEditable` slot:
+
+```tsx
+import { createEditor } from 'platejs/react';
+
+import { SlashCombobox, SlashPlugin } from '@/components/editor/slash';
+
+const editor = createEditor({
+  plugins: [
+    // ...otherPlugins,
+    SlashPlugin.configure({ slots: { afterEditable: SlashCombobox } }),
+  ],
+});
+```
+
+Its state is a [`ComboboxState`](/docs/combobox#comboboxstate) plus `items`. A `/` opens the menu at the start of a line or after a space, and `triggerQuery` keeps a `/` typed in a code block as plain text. Edit `SlashPlugin` in the copied file to change either.
+
+</Steps>
+
+## Add app items
+
+<ComponentPreview name="slash-command-items-demo" />
+
+Pass your own items through `initialState.items` instead of editing the copied file. Each item names a `group`. It joins the built-in group with that name, such as `Basic blocks`, or starts a new group after the built-in ones.
+
+```tsx
+import { PenLineIcon } from 'lucide-react';
+import { createEditor } from 'platejs/react';
+
+import { SlashCombobox, SlashPlugin } from '@/components/editor/slash';
+
+const editor = createEditor({
+  plugins: [
+    // ...otherPlugins,
+    SlashPlugin.configure({
+      initialState: {
+        items: [
+          {
+            group: 'Basic blocks',
+            icon: () => <PenLineIcon />,
+            isAvailable: () => true,
+            keywords: ['sign'],
+            label: 'Signature',
+            onSelect: (_editor, tx) => {
+              tx.text.insert('Signed by the review team.');
+            },
+          },
+        ],
+      },
+      slots: { afterEditable: SlashCombobox },
+    }),
+  ],
+});
+```
+
+An item takes the fields a built-in one does: `label`, `icon`, `isAvailable`, optional `keywords`, and `onSelect` or `onClick`. Its `icon` is a function that returns the icon, such as `() => <PenLineIcon />`, because plugin state holds data and functions but not elements. `onSelect` runs inside the menu's transaction and replaces the typed `/` and query; return `false` to keep them.
+
+## Usage
+
+How to use slash commands:
+
+1. Type `/` at the start of a line or after a space to open the slash menu
+2. Keep typing to narrow the options, best match first, or use the arrow keys to navigate
+3. Press Enter, press Tab or click to run an option; it replaces the typed `/` and query
+4. Press Escape to close the menu and keep the typed text
+
+Available options include:
+- Text blocks (paragraphs, headings)
+- Lists (bulleted, numbered, to-do)
+- Advanced blocks (tables, code blocks, callouts)
+- Inline elements (dates, equations)
+
+<Callout type="info">
+  Use keywords to quickly find options. For example, type '/ul' for Bulleted List or '/h1' for Heading 1.
+</Callout>
+
+## Plate Plus
+
+<ComponentPreviewPro name="slash-command-pro" />
+
+## API Reference
+
+| API | Source | Use |
+|-----|--------|-----|
+| `SlashPlugin` | `slash` registry | Edit-only plugin whose state holds the `/` trigger policy, the code-block check and the app's `items`. |
+| `SlashItem` | `slash` registry | One app item: a built-in item's fields, with `icon` as a function, plus the `group` it joins. |
+| `SlashKit` | `slash` registry | `SlashPlugin` with `SlashCombobox` in its `afterEditable` slot. |
+| `SlashCombobox` | `slash` registry | The slash menu, built from the file's `groups` list and then the plugin's `items`. Edit `groups` to remove or reorder built-in options. While you type, the menu lists matches best first and keeps the list's order only between equal matches. |

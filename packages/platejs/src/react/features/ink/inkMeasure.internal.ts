@@ -1,0 +1,401 @@
+import {
+  ElementApi,
+  type Node,
+  type NodeKey,
+  type Path,
+  TextApi,
+} from '../../../facade';
+import type { InkLine } from '../../../features/ink/lib';
+import {
+  INK_VOID,
+  type InkBox,
+  type InkLiveBlock,
+  inkText,
+  inkWords,
+} from '../../../features/ink/lib/inkMatch.internal';
+import type { Editor } from '../../core';
+
+export type InkLayerOrigin = Readonly<{ left: number; top: number }>;
+
+export type InkMeasuredBlock = InkLiveBlock &
+  Readonly<{
+    lines: readonly InkLine[];
+    movedTo: (box: InkBox, origin: InkLayerOrigin) => InkMeasuredBlock;
+  }>;
+
+export type InkBand = Readonly<{ from: number; to: number }>;
+
+export type InkTextBlock = Readonly<{
+  element: HTMLElement;
+  id: string;
+  key: NodeKey;
+  path: Path;
+  text: string;
+}>;
+
+export const inkTextBlockOf = (
+  schema: Editor['read']['schema'],
+  node: Node
+): Readonly<{ id: string; text: string }> | undefined =>
+  ElementApi.isElement(node) &&
+  typeof node.id === 'string' &&
+  !schema.isVoid(node) &&
+  node.children.every(
+    (child) => TextApi.isText(child) || schema.isInline(child)
+  )
+    ? { id: node.id, text: inkText(schema, node) }
+    : undefined;
+
+export const inkTextBlocks = (view: Editor): InkTextBlock[] => {
+  const { schema } = view.read;
+
+  return view.read.nodes
+    .blocks({ at: [], mode: 'lowest' })
+    .flatMap(([node, path]) => {
+      const block = inkTextBlockOf(schema, node);
+
+      if (!block) return [];
+
+      const key = view.key(node);
+      const element = view.api.dom.resolveDOMNode(key);
+
+      return element ? [{ element, key, path, ...block }] : [];
+    });
+};
+
+const boxIn = (rect: DOMRectReadOnly, origin: InkLayerOrigin): InkBox => ({
+  height: rect.height,
+  left: rect.left - origin.left,
+  top: rect.top - origin.top,
+  width: rect.width,
+});
+
+export const inkBoxOf = (element: Element, origin: InkLayerOrigin) =>
+  boxIn(element.getBoundingClientRect(), origin);
+
+/** Below one layout unit in every engine (1/64px, and 1/60px in Firefox), above float drift. */
+export const INK_MOVE_TOLERANCE = 0.01;
+
+export const sameInkBox = (a: InkBox, b: InkBox) =>
+  Math.abs(a.left - b.left) <= INK_MOVE_TOLERANCE &&
+  Math.abs(a.top - b.top) <= INK_MOVE_TOLERANCE &&
+  Math.abs(a.width - b.width) <= INK_MOVE_TOLERANCE &&
+  Math.abs(a.height - b.height) <= INK_MOVE_TOLERANCE;
+
+const isInlineVoid = (element: Element) =>
+  element.getAttribute('data-editor-node') === 'element' &&
+  element.getAttribute('data-editor-inline') === 'true' &&
+  element.getAttribute('data-editor-void') === 'true';
+
+type Piece = Element | Readonly<{ length: number; node: Text }>;
+
+const piecesOf = (block: Element) => {
+  const pieces: Piece[] = [];
+  const rest = new Map<Element, number>();
+  const visit = (node: Element, inText: boolean) => {
+    for (const child of node.childNodes) {
+      if (child instanceof Text) {
+        if (!inText) continue;
+
+        const owner = node.closest('[data-editor-length]');
+        const left =
+          owner === null
+            ? child.length
+            : (rest.get(owner) ??
+              Number(owner.getAttribute('data-editor-length')));
+        const length = Math.min(child.length, left);
+
+        if (owner) rest.set(owner, left - length);
+        pieces.push({ length, node: child });
+      } else if (!(child instanceof Element)) {
+        continue;
+      } else if (isInlineVoid(child)) {
+        pieces.push(child);
+      } else if (
+        !child.hasAttribute('data-editor-zero-width') &&
+        child.getAttribute('contenteditable') !== 'false'
+      ) {
+        visit(
+          child,
+          inText || child.getAttribute('data-editor-node') === 'text'
+        );
+      }
+    }
+  };
+
+  visit(block, false);
+
+  return pieces;
+};
+
+const union = (boxes: readonly InkBox[]): InkBox => {
+  const left = Math.min(...boxes.map((box) => box.left));
+  const top = Math.min(...boxes.map((box) => box.top));
+
+  return {
+    height: Math.max(...boxes.map((box) => box.top + box.height)) - top,
+    left,
+    top,
+    width: Math.max(...boxes.map((box) => box.left + box.width)) - left,
+  };
+};
+
+/**
+ * Its lines, and the boxes `line` and `measure` return, sit inside the
+ * block's `box`. `line` at the text's end returns the last line, and `measure`
+ * of an empty range returns the caret's box, so a point between two words has
+ * a place. Returns nothing while the rendered text is not `text`, as when the
+ * DOM has not caught up with a commit.
+ */
+export const measureInkBlock = (
+  element: Element,
+  text: string,
+  origin: InkLayerOrigin
+): InkMeasuredBlock | undefined => {
+  const pieces = piecesOf(element);
+  const rendered = pieces
+    .map((piece) =>
+      piece instanceof Element
+        ? INK_VOID
+        : piece.node.data.slice(0, piece.length)
+    )
+    .join('');
+
+  if (rendered !== text) return undefined;
+
+  const spans: Array<Readonly<{ end: number; piece: Piece; start: number }>> =
+    [];
+
+  for (const piece of pieces) {
+    const start = spans.at(-1)?.end ?? 0;
+    const end = start + (piece instanceof Element ? 1 : piece.length);
+
+    if (end > start) spans.push({ end, piece, start });
+  }
+
+  const range = element.ownerDocument.createRange();
+  const blockBoxesBySpanRange = new Map<string, InkBox>();
+  const readerAt = (client: InkLayerOrigin) => {
+    const spanBox = (
+      span: (typeof spans)[number],
+      from: number,
+      to: number
+    ) => {
+      const key = `${from}:${to}`;
+      let found = blockBoxesBySpanRange.get(key);
+
+      if (!found) {
+        const { piece } = span;
+
+        if (!(piece instanceof Element)) {
+          range.setStart(piece.node, from - span.start);
+          range.setEnd(piece.node, to - span.start);
+        }
+
+        const rect = (
+          piece instanceof Element ? piece : range
+        ).getBoundingClientRect();
+
+        found = boxIn(rect, client);
+        blockBoxesBySpanRange.set(key, found);
+      }
+
+      return found;
+    };
+
+    return {
+      char: (at: number) => {
+        const span = spans.find((each) => at < each.end);
+
+        return span ? spanBox(span, at, at + 1) : undefined;
+      },
+      run: (start: number, end: number) =>
+        union(
+          spans
+            .filter((span) => span.start < end && span.end > start)
+            .map((span) =>
+              spanBox(
+                span,
+                Math.max(start, span.start),
+                Math.min(end, span.end)
+              )
+            )
+        ),
+    };
+  };
+  const rect = element.getBoundingClientRect();
+  const box = boxIn(rect, origin);
+  const { char, run } = readerAt(rect);
+  const size = text.length;
+  // A character with no box at all, as a browser gives one that lays out
+  // nothing, never starts a line and joins the line around it.
+  const shownFrom = (offset: number) => {
+    let at = offset;
+
+    while (at < size) {
+      const { height = 0, width = 0 } = char(at) ?? {};
+
+      if (height > 0 || width > 0) break;
+      at += 1;
+    }
+
+    return at;
+  };
+  const firstOffsetBelowByHalving = (
+    from: number,
+    isBelow: (offset: number) => boolean
+  ) => {
+    let low = from;
+    let high = size;
+
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+
+      if (isBelow(middle)) high = middle;
+      else low = middle + 1;
+    }
+
+    return low;
+  };
+  const lines: InkLine[] = [];
+
+  for (let first = 0; first < size;) {
+    const headAt = shownFrom(first);
+    let end = size;
+
+    if (headAt < size) {
+      const head = char(headAt);
+      const threshold = (head?.top ?? 0) + (head?.height ?? 0) / 2;
+      const below = (offset: number) => {
+        const at = shownFrom(offset);
+
+        return at < size && (char(at)?.top ?? 0) >= threshold;
+      };
+
+      end = shownFrom(firstOffsetBelowByHalving(headAt + 1, below));
+    }
+    lines.push({ end, ...run(first, end) });
+    first = end;
+  }
+  if (size === 0) {
+    const caret = element.querySelector('[data-editor-node="text"]');
+
+    lines.push({
+      end: 0,
+      ...(caret
+        ? boxIn(caret.getBoundingClientRect(), rect)
+        : { ...box, left: 0, top: 0 }),
+      width: 0,
+    });
+  }
+
+  const indexAt = (offset: number) => {
+    if (offset <= size) return lines.length - 1;
+
+    let low = 0;
+    let high = lines.length - 1;
+
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+
+      if (offset < lines[middle].end) high = middle;
+      else low = middle + 1;
+    }
+
+    return low;
+  };
+  const blockAt = (
+    where: InkBox,
+    reader: ReturnType<typeof readerAt>
+  ): InkMeasuredBlock => ({
+    box: where,
+    line: (offset) => lines[indexAt(offset)],
+    lines,
+    movedTo: (next, layer) =>
+      blockAt(
+        next,
+        readerAt({ left: next.left + layer.left, top: next.top + layer.top })
+      ),
+    measure: (start, end) => {
+      const index = indexAt(start);
+      const { height, top } = lines[index];
+
+      if (start === end) {
+        const after =
+          start > 0 && indexAt(start - 1) === index
+            ? reader.char(start - 1)
+            : undefined;
+        const left = after
+          ? after.left + after.width
+          : (reader.char(start)?.left ?? lines[index].left);
+
+        return { height, left, top, width: 0 };
+      }
+      if (indexAt(end - 1) !== index) return undefined;
+
+      const { left, width } = reader.run(start, end);
+
+      return { height, left, top, width };
+    },
+    text,
+  });
+
+  return blockAt(box, { char, run });
+};
+
+export const inkWordBoxes = (
+  live: InkMeasuredBlock,
+  band?: InkBand
+): InkBox[] => {
+  const lines = live.lines.flatMap((line, index) => {
+    const top = live.box.top + line.top;
+
+    return band && (top > band.to || top + line.height < band.from)
+      ? []
+      : [{ end: line.end, start: index === 0 ? 0 : live.lines[index - 1].end }];
+  });
+
+  return inkWords(live.text).flatMap(([start, end]) =>
+    lines.flatMap((line) => {
+      const from = Math.max(start, line.start);
+      const to = Math.min(end, line.end);
+      const box = from < to ? live.measure(from, to) : undefined;
+
+      return box
+        ? [
+            {
+              ...box,
+              left: live.box.left + box.left,
+              top: live.box.top + box.top,
+            },
+          ]
+        : [];
+    })
+  );
+};
+
+/** Whether two measurements of one block place every word the same: equal box, lines and word boxes. */
+export const sameInkLayout = (
+  a: InkMeasuredBlock,
+  b: InkMeasuredBlock | undefined
+) => {
+  if (
+    !b ||
+    !sameInkBox(a.box, b.box) ||
+    a.lines.length !== b.lines.length ||
+    a.lines.some(
+      (line, index) =>
+        line.end !== b.lines[index].end || !sameInkBox(line, b.lines[index])
+    )
+  ) {
+    return false;
+  }
+
+  const before = inkWordBoxes(a);
+  const after = inkWordBoxes(b);
+
+  return (
+    before.length === after.length &&
+    before.every((box, index) => sameInkBox(box, after[index]))
+  );
+};

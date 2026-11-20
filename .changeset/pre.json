@@ -1,0 +1,13 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "@platejs/test": "54.0.0-beta.0",
+    "@platejs/cli": "54.0.0-beta.0",
+    "platejs": "53.1.2",
+    "plite": "0.0.0-private",
+    "plitejs": "0.0.1",
+    "www": "0.0.1"
+  },
+  "changesets": ["plate-v2-beta"]
+}

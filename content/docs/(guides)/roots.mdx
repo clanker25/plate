@@ -1,0 +1,312 @@
+---
+title: "Roots"
+description: "Use extra roots for headers, footers, synced blocks, captions, and other editable regions."
+---
+
+Plate stores the primary document as a normal block array. Extra roots let one
+editor own headers, footers, synced blocks, captions, side panels, and other
+editable regions without creating separate editor instances. Use roots when the
+content should share editor state, history, collaboration, schema, and commands.
+
+## Value shape
+
+The shortest editor value is still an array of blocks. Plate treats it as the
+primary document.
+
+```tsx
+const editor = createEditor({
+  initialValue: [{ type: "paragraph", children: [{ text: "Body" }] }],
+});
+```
+
+Pass `initialValue.children` plus `initialValue.roots` when the editor owns
+extra roots.
+
+```tsx
+const editor = createEditor({
+  initialValue: {
+    children: [{ type: "paragraph", children: [{ text: "Body" }] }],
+    roots: {
+      header: [{ type: "paragraph", children: [{ text: "Draft" }] }],
+      footer: [{ type: "paragraph", children: [{ text: "Internal" }] }],
+    },
+  },
+});
+```
+
+Each root is a normal Plate block array. Rootless transforms, points, and
+selections resolve against the current editor or view root. A root-bound view
+resolves rootless locations against its own root.
+
+A live node or node key reaches its own root from any editor or view. Plugin
+commands follow their target the same way. Given a node from the header, a
+command edits the header. Called with no target, it edits the root that holds
+the caret. Code outside a plugin command that writes by a bare path on the
+editor writes the primary document, so pass a node or use
+`useRootEditor(root)` there.
+
+Persist roots through the full [Document Meta](/docs/document-meta) value
+instead of saving only one mounted root. When an application publishes a
+complete external snapshot, use only `tx.value.replace({ children, roots,
+meta, selection })`. It fits the combined document atomically, removes omitted
+roots, resets omitted persisted meta, and clears selection when `selection` is
+omitted. An invalid combined payload returns `false` and publishes nothing.
+Use `tx.roots.*` only for a targeted named-root change.
+
+## Reading and writing roots
+
+Read the primary document with `editor.read.children()`. Read an extra root by key.
+
+```tsx
+const body = editor.read.children();
+const header = editor.read.root("header");
+```
+
+Create, replace, or delete extra roots inside `editor.update`.
+
+```tsx
+editor.update((tx) => {
+  tx.roots.create("aside:1", [
+    { type: "paragraph", children: [{ text: "Aside" }] },
+  ]);
+});
+```
+
+Mutate the primary document with normal node and text transforms instead of
+`tx.roots`.
+
+## Rendering roots
+
+Pass `root` to `EditorContent` when one React tree renders a named root.
+
+```tsx
+<EditorRoot editor={editor}>
+  <EditorContent aria-label="Header" root="header" />
+  <EditorContent aria-label="Body" />
+  <EditorContent aria-label="Footer" root="footer" />
+</EditorRoot>
+```
+
+Use `useRootChrome(root)` on non-editable wrappers that should participate
+in mouse selection and focus restoration for that root.
+
+```tsx
+const chrome = useRootChrome("header");
+
+return (
+  <section {...chrome.props}>
+    <EditorContent root="header" />
+  </section>
+);
+```
+
+Use `useRootState(root, selector)` for UI that reads one root without
+subscribing to every editor change. Use `useRootEditor(root)` for commands
+that must run against a specific root. While an `EditorContent` shows that
+root, its `editor.api.dom` calls run in the same view of the root as its
+commands. [Views](/docs/api/dom#views) lists the calls that run elsewhere and
+how the editor `createEditor` returns picks a view.
+
+## Content roots
+
+Content roots attach a separately addressed editable root to an element in
+another root. `element.childRoots[slot]` stores the root key, and the detached
+content lives in `editor.read.root(rootKey)`. Keep ordinary structural content
+in the element's `children`.
+
+```tsx
+import { definePlugin, schema } from 'platejs/react';
+
+const SyncedBlockPlugin = definePlugin('syncedBlock', {
+  schema: {
+    element: {
+      content: schema.content.text({ default: 'text', min: 1 }),
+      contentRoots: {
+        body: {
+          content: schema.content.type('paragraph', {
+            default: { type: 'paragraph' },
+            min: 1,
+          }),
+          ownership: 'shared',
+        },
+      },
+    },
+  },
+});
+```
+
+Install `SyncedBlockPlugin` in the editor's `plugins` array.
+
+Create a persistent content root by storing the root key on the owning element
+and creating the named root in the same transaction.
+
+```tsx
+const bodyRoot = `synced-block:${blockId}:body`;
+
+editor.update((tx) => {
+  tx.roots.create(bodyRoot, [
+    { type: "paragraph", children: [{ text: "Synced body" }] },
+  ]);
+  tx.nodes.insert({
+    type: "syncedBlock",
+    childRoots: { body: bodyRoot },
+    children: [{ text: "" }],
+  });
+});
+```
+
+Each `contentRoots` entry declares a slot, child-root grammar, and ownership.
+`childRoots[slot]` is the persisted ownership link that survives save/load and
+collaboration.
+
+Use `ownership: "shared"` when several owners intentionally project the same
+root, as with synced blocks. Shared aliases stay attached to one root; removing
+even the last owner preserves that root. A schema with `unknown: "reject"`
+cannot hold a root that no element owns, so there the root goes with its last
+owner. Use `ownership: "exclusive"` for
+a separately mounted document that belongs to exactly one element, such as an
+element-owned annotation surface. Moving an owner preserves its root key.
+Removing, retargeting, or changing the type of an exclusive owner removes the
+root only when it becomes orphaned. In an
+[authored](/docs/authored-changes#configure-a-view) `propose` view, deleting an
+owner keeps its root until someone accepts the deletion.
+
+### Set roots
+
+Declare `structure: { kind: 'set' }` on an exclusive content root when each of
+its top-level blocks is a separate item, such as the shapes of a
+[board](/docs/board). Each top-level block of the root is then a member of the
+set.
+
+```tsx
+import { definePlugin, schema } from 'platejs/react';
+
+const NotePlugin = definePlugin('note', {
+  schema: {
+    element: {
+      content: schema.content.types(['paragraph'], {
+        default: { type: 'paragraph' },
+        min: 1,
+      }),
+      object: true,
+    },
+  },
+});
+
+const CanvasPlugin = definePlugin('canvas', {
+  schema: {
+    element: {
+      contentRoots: {
+        shapes: {
+          content: schema.content.types(['note'], { min: 0 }),
+          ownership: 'exclusive',
+          structure: { kind: 'set' },
+        },
+      },
+      void: 'block',
+    },
+  },
+});
+```
+
+The schema refuses a set root unless its ownership is `'exclusive'`, its owner
+is a void element, and each block type the root admits is an object or a void
+element. Every reader then treats the members as separate items:
+
+- A text selection stays in one member. A selection write that crosses
+  members, such as Select All, settles in one member and raises no error.
+- Removing text or a fragment over a range across members refuses and
+  changes nothing. A delete over all of one member's text keeps the member,
+  emptied.
+- Comparison reports a changed member as one change. Members keep their stored
+  order.
+
+A plugin can refuse a type change, wrap, or unwrap of its own owner before the
+write applies. Contribute a `nodeWriteVeto` that returns `true` for the writes
+it refuses:
+
+```tsx
+import { definePlugin, nodeWriteVeto } from 'platejs';
+
+const SyncedBlockGuardPlugin = definePlugin('syncedBlockGuard', {
+  contributions: [
+    nodeWriteVeto.of(({ node }) => node.type === 'syncedBlock'),
+  ],
+});
+```
+
+The veto receives `{ kind, node, path, root }`. `kind` is `'retype'`,
+`'wrap'`, or `'unwrap'`, and a `'retype'` input also carries the new `type`.
+`tx.nodes.set`, `tx.blocks.set`, `tx.blocks.reset` and `tx.blocks.toggle`
+retype. `tx.nodes.wrap` and a wrapping toggle wrap. `tx.nodes.unwrap` unwraps.
+`tx.nodes.lift` counts as an unwrap of the lifted node's parent, except when it
+lifts the last of several children, which leaves the parent whole.
+`tx.nodes.merge` counts as an unwrap of the node it merges into the node
+before, unless that node before is empty and the merge removes it instead. A
+merge also counts as an unwrap of each ancestor it empties and removes, such as
+a holder whose only child merges into a block outside it, and a delete that
+joins two blocks merges them the same way.
+One refusal from any contributed veto rolls back the whole update, as a
+[refused update](/docs/api/editor-api#updating-state) does. Remote imports and
+history replays never consult a veto. Removing the owner is not one of these
+writes, so the orphan rule above still applies to it.
+
+Duplicate and copy/paste clone detached roots. Each copy gets a key that no
+earlier copy took, `<root>:copy:<n>`, or `<root>:copy:<clientID>:<n>` in an
+editor bound to Yjs, so two collaborators' copies never share a key. Shared
+aliases in the copied group continue to share one remapped root. Owner-first and root-first creation are both valid
+inside one transaction. `ContentSlice` carries the transitive detached-root
+payload across clipboard and insertion boundaries, including a collapsed
+target. Cut captures that payload before deleting the owner and root in one
+transaction. Undo and redo restore the owner, root content, and root-qualified
+selection together.
+
+Render the child root from the plugin component with `slots.contentRoot(slot)`.
+
+```tsx
+const SyncedBlock = ({ attributes, element, slots }) => (
+  <section {...attributes}>
+    <header>Synced block</header>
+    {slots.contentRoot("body", {
+      ariaLabel: "Synced block body",
+      placeholder: "Empty synced block",
+    })}
+  </section>
+);
+```
+
+A root whose blocks are selected as whole objects, such as a board's shapes,
+can give focus to an element of its own instead of its editable. Pass
+`nodeSelectionFocus`, a ref to that element. That element takes focus when the
+editor moves focus into the root, as after an undo, while there is no selection
+or a node selection holds only the root's top-level blocks. It does not take
+focus while the editor shows a caret or a text selection, or on a call to
+`editor.api.dom.focus()`, which focuses the root's editable. Unless the element
+is a control, such as a button, the editor reads no keys from it, so it must
+handle the keys it needs, such as undo and redo through the `onKeyDown` of
+`useEditorHistory`.
+
+```tsx
+const Board = ({ attributes, children, slots }) => {
+  const focusTarget = useRef<HTMLDivElement>(null);
+  const history = useEditorHistory();
+
+  return (
+    <div {...attributes}>
+      <div
+        ref={focusTarget}
+        tabIndex={-1}
+        contentEditable={false}
+        onKeyDown={history.onKeyDown}
+      />
+      {slots.contentRoot("shapes", { nodeSelectionFocus: focusTarget })}
+      {children}
+    </div>
+  );
+};
+```
+
+Use content roots for synced blocks, editable cards, and element-owned editable
+regions. Use [DOM coverage boundaries](/docs/dom-coverage)
+when the content is in the same root but intentionally not mounted, such as a
+closed accordion body or inactive tab panel.

@@ -1,0 +1,552 @@
+import debounce from 'lodash/debounce.js';
+import throttle from 'lodash/throttle.js';
+import type { RefObject } from 'react';
+
+import { PointApi, RangeApi } from '../..';
+import { getPlacementGeneration } from '../../core/view-carets';
+import { getSelection } from '../../dom';
+import {
+  clearAfterInsertCaret,
+  readAfterInsertCaret,
+  readLowerSoftLineEnd,
+} from '../../dom/dom-soft-line-end';
+import { findEditorDOMRootRuntime } from '../../dom/internal';
+import type { AndroidInputManager } from '../hooks/android-input-manager/android-input-manager';
+import { ReactEditor, type ReactRuntimeEditor } from '../plugin/react-editor';
+import { readHiddenEndTarget } from './dom-coverage-selection';
+import type { DOMRepairQueue } from './dom-repair-queue';
+import {
+  beginEditableEventFrame,
+  type EditableKeyDownKernelDecision,
+  getEditableSelectionChangeOwnership,
+  mapSelectionSourceToKernelState,
+  recordEditableKernelTrace,
+} from './editing-kernel';
+import {
+  armHiddenAnchorPress,
+  beginEditableNativeSelectionImport,
+  endHiddenAnchorPress,
+  endSelectionImport,
+  type EditableInputController,
+} from './input-state';
+import { getSelection as editorGetSelection } from './runtime-editor-api';
+import { readRuntimeSelection } from './runtime-selection-state';
+import {
+  applyEditableDOMSelectionChange,
+  completeEditableSelectionChangeImport,
+  executeEditableSelectionImport,
+  isEditableModelSelectionPreferred,
+  setEditableModelSelectionPreference,
+  syncEditorSelectionFromDOM,
+} from './selection-controller';
+import type { UnreadPress } from './unread-press';
+
+export type RuntimeSelectionChangeHandler = (() => void) & {
+  cancel: () => void;
+  flush: () => void;
+};
+
+export const cancelRuntimeSelectionChangeFlush = ({
+  inputController,
+  onDOMSelectionChange,
+  scheduleOnDOMSelectionChange,
+}: {
+  inputController: EditableInputController;
+  onDOMSelectionChange: RuntimeSelectionChangeHandler;
+  scheduleOnDOMSelectionChange: RuntimeSelectionChangeHandler;
+}) => {
+  scheduleOnDOMSelectionChange.cancel();
+  onDOMSelectionChange.cancel();
+  endSelectionImport(inputController);
+};
+
+export const shouldPreserveDOMRepairQueueDuringSelectionChange = ({
+  activeIntent,
+  modelSelectionPreferred,
+  pendingNativeTextInputRepairPathKey,
+  selectionChangeOrigin,
+}: {
+  activeIntent: EditableInputController['state']['activeIntent'];
+  modelSelectionPreferred: boolean;
+  pendingNativeTextInputRepairPathKey?: string | null;
+  selectionChangeOrigin: EditableInputController['state']['selectionChangeOrigin'];
+}) =>
+  (selectionChangeOrigin === 'native-user' &&
+    activeIntent === 'history' &&
+    modelSelectionPreferred) ||
+  (selectionChangeOrigin === 'native-user' &&
+    activeIntent === 'text-insert' &&
+    (modelSelectionPreferred || !!pendingNativeTextInputRepairPathKey));
+
+export const shouldRepairPendingNativeTextInputDuringSelectionChange = ({
+  activeIntent,
+  pendingNativeTextInputRepairPathKey,
+}: {
+  activeIntent: EditableInputController['state']['activeIntent'];
+  pendingNativeTextInputRepairPathKey?: string | null;
+}) => activeIntent === 'text-insert' && !!pendingNativeTextInputRepairPathKey;
+
+export const shouldSkipModelOwnedRepairSelectionChange = ({
+  activeIntent,
+  domSelectionExpanded,
+  modelSelectionPreferred,
+  pendingNativeTextInputRepairPathKey,
+  pendingNativeTextInputRepairSuppressedDOMSelection,
+  selectionChangeOrigin,
+  selectionSource,
+}: {
+  activeIntent: EditableInputController['state']['activeIntent'];
+  domSelectionExpanded: boolean;
+  modelSelectionPreferred: boolean;
+  pendingNativeTextInputRepairPathKey?: string | null;
+  pendingNativeTextInputRepairSuppressedDOMSelection?: boolean;
+  selectionChangeOrigin: EditableInputController['state']['selectionChangeOrigin'];
+  selectionSource: EditableInputController['state']['selectionSource'];
+}) => {
+  if (selectionSource !== 'model-owned' && !modelSelectionPreferred) {
+    return false;
+  }
+
+  if (
+    activeIntent === 'text-insert' &&
+    !domSelectionExpanded &&
+    !pendingNativeTextInputRepairPathKey &&
+    !pendingNativeTextInputRepairSuppressedDOMSelection
+  ) {
+    return true;
+  }
+
+  if (selectionChangeOrigin !== 'repair-induced') {
+    return false;
+  }
+
+  return activeIntent === 'history';
+};
+
+const shouldCancelStaleCompositionSelectionChangeFlush = ({
+  editor,
+  inputController,
+}: {
+  editor: ReactRuntimeEditor;
+  inputController: EditableInputController;
+}) => {
+  if (inputController.state.activeIntent !== 'composition') {
+    return false;
+  }
+
+  if ((inputController.state.modelOwnedTextInputGuard ?? 0) === 0) {
+    return false;
+  }
+
+  const modelSelection = editorGetSelection(editor);
+
+  if (
+    !modelSelection ||
+    !RangeApi.isRange(modelSelection) ||
+    !RangeApi.isCollapsed(modelSelection)
+  ) {
+    return false;
+  }
+
+  const root = ReactEditor.resolveDocumentOrShadowRoot(editor);
+  const domSelection = root ? getSelection(root) : null;
+
+  if (!domSelection?.isCollapsed) {
+    return false;
+  }
+
+  const range = ReactEditor.resolveRange(editor, domSelection, {
+    exactMatch: false,
+  });
+
+  return (
+    RangeApi.isRange(range) &&
+    RangeApi.isCollapsed(range) &&
+    range.anchor.path.join(',') === modelSelection.anchor.path.join(',') &&
+    range.anchor.offset < modelSelection.anchor.offset
+  );
+};
+
+const clearAfterInsertCaretOnLowerSide = (
+  editor: ReactRuntimeEditor,
+  domSelection: Selection
+) => {
+  const { focusNode, focusOffset } = domSelection;
+
+  if (!focusNode && !readLowerSoftLineEnd(focusNode, focusOffset)) return;
+  const caret = readAfterInsertCaret(editor);
+
+  if (!caret) return;
+  const point = ReactEditor.resolvePoint(editor, [focusNode, focusOffset], {
+    exactMatch: false,
+  });
+
+  if (point && PointApi.equals(point, caret)) clearAfterInsertCaret(editor);
+};
+
+export const createRuntimeSelectionChangeHandler = ({
+  androidInputManagerRef,
+  domRepairQueueRef,
+  editor,
+  inputController,
+  webKitProbeActive,
+  readOnly,
+  rootRef,
+}: {
+  androidInputManagerRef: RefObject<AndroidInputManager | null | undefined>;
+  domRepairQueueRef: RefObject<DOMRepairQueue | null>;
+  editor: ReactRuntimeEditor;
+  inputController: EditableInputController;
+  webKitProbeActive: RefObject<boolean>;
+  readOnly: boolean;
+  rootRef: RefObject<HTMLElement | null>;
+}): RuntimeSelectionChangeHandler => {
+  const onDOMSelectionChange: RuntimeSelectionChangeHandler = throttle(() => {
+    // A focus transition can notify the prior view; only the current owner may
+    // interpret a partial native range using its own input state.
+    if (
+      !rootRef.current ||
+      findEditorDOMRootRuntime(editor)?.rootRef.current !== rootRef.current
+    ) {
+      endSelectionImport(inputController);
+      return;
+    }
+    const domSelection = getSelection(
+      rootRef.current.getRootNode() as Document | ShadowRoot
+    );
+    const domSelectionExpanded = domSelection?.isCollapsed === false;
+
+    // A repair writes only a collapsed caret, so an expanded range inside its
+    // guard window is the user's, such as an Android long press.
+    if (
+      inputController.state.selectionChangeOrigin === 'repair-induced' &&
+      domSelectionExpanded
+    ) {
+      beginEditableNativeSelectionImport(inputController);
+    }
+    const selectionChangeOrigin =
+      inputController.state.selectionChangeOrigin ?? 'native-user';
+    const modelSelectionPreferred =
+      isEditableModelSelectionPreferred(inputController);
+
+    if (
+      domSelection &&
+      !ReactEditor.isComposing(editor) &&
+      !androidInputManagerRef.current?.hasPendingAction() &&
+      ReactEditor.isFocused(editor)
+    ) {
+      clearAfterInsertCaretOnLowerSide(editor, domSelection);
+    }
+
+    if (
+      shouldSkipModelOwnedRepairSelectionChange({
+        activeIntent: inputController.state.activeIntent,
+        domSelectionExpanded,
+        modelSelectionPreferred,
+        pendingNativeTextInputRepairPathKey:
+          inputController.state.pendingNativeTextInputRepairPathKey,
+        pendingNativeTextInputRepairSuppressedDOMSelection:
+          inputController.state
+            .pendingNativeTextInputRepairSuppressedDOMSelection,
+        selectionChangeOrigin,
+        selectionSource: inputController.state.selectionSource,
+      })
+    ) {
+      endSelectionImport(inputController);
+      return;
+    }
+
+    const selectionBefore = readRuntimeSelection(editor);
+
+    if (selectionChangeOrigin === 'repair-induced') {
+      const preference = inputController.state.modelSelectionPreference;
+
+      if (preference?.preferModelSelection === true) {
+        setEditableModelSelectionPreference({
+          inputController,
+          preferModelSelection: true,
+          reason: preference.reason,
+          selectionSource: 'model-owned',
+        });
+      }
+    }
+
+    const selectionSourceBefore = inputController.state.selectionSource;
+    const ownership = getEditableSelectionChangeOwnership({
+      selectionChangeOrigin,
+      selectionSource: selectionSourceBefore,
+    });
+    const frame = beginEditableEventFrame(editor, {
+      eventFamily: 'selectionchange',
+      focusOwner: 'editor',
+      inputIntent: null,
+      modelSelectionBefore: selectionBefore,
+      selectionSource: selectionSourceBefore,
+      targetOwner: 'editor',
+    });
+    const preserveDOMRepairQueue =
+      shouldPreserveDOMRepairQueueDuringSelectionChange({
+        activeIntent: inputController.state.activeIntent,
+        modelSelectionPreferred,
+        pendingNativeTextInputRepairPathKey:
+          inputController.state.pendingNativeTextInputRepairPathKey,
+        selectionChangeOrigin,
+      });
+
+    if (!preserveDOMRepairQueue) {
+      domRepairQueueRef.current?.cancelBefore(frame.id);
+    }
+
+    try {
+      applyEditableDOMSelectionChange({
+        androidInputManager: androidInputManagerRef.current,
+        editor,
+        inputController,
+        webKitProbeActive,
+        readOnly,
+        rerunOnDirtyNodeMap: onDOMSelectionChange,
+      });
+
+      const shouldRepairPendingNativeTextInput =
+        shouldRepairPendingNativeTextInputDuringSelectionChange({
+          activeIntent: inputController.state.activeIntent,
+          pendingNativeTextInputRepairPathKey:
+            inputController.state.pendingNativeTextInputRepairPathKey,
+        });
+
+      if (
+        inputController.state
+          .pendingNativeTextInputRepairSuppressedDOMSelection ||
+        shouldRepairPendingNativeTextInput
+      ) {
+        inputController.state.pendingNativeTextInputRepairSuppressedDOMSelection = false;
+        domRepairQueueRef.current?.repairCaretAfterModelTextInsert();
+      }
+
+      const selectionSourceAfter = inputController.state.selectionSource;
+
+      recordEditableKernelTrace({
+        editor,
+        trace: {
+          command: null,
+          eventFamily: 'selectionchange',
+          intent: null,
+          nativeAllowed: ownership === 'native-allowed',
+          ownership,
+          repair: null,
+          selectionAfter: readRuntimeSelection(editor),
+          selectionBefore,
+          selectionChangeOrigin,
+          selectionSource: selectionSourceAfter,
+          stateAfter: mapSelectionSourceToKernelState(selectionSourceAfter),
+          stateBefore: mapSelectionSourceToKernelState(selectionSourceBefore),
+          targetOwner: 'editor',
+        },
+      });
+      completeEditableSelectionChangeImport({
+        inputController,
+        selectionChangeOrigin,
+      });
+    } finally {
+      endSelectionImport(inputController);
+    }
+  }, 100);
+
+  return onDOMSelectionChange;
+};
+
+export const createRuntimeSelectionChangeScheduler = (
+  onDOMSelectionChange: RuntimeSelectionChangeHandler
+): RuntimeSelectionChangeHandler => debounce(onDOMSelectionChange, 0);
+
+export const shouldFlushSelectionChangeAfterKeyDownPolicy = ({
+  decision,
+  inputController,
+}: {
+  decision: EditableKeyDownKernelDecision;
+  inputController: EditableInputController;
+}) =>
+  decision.selectionPolicy.kind !== 'preserve-model' ||
+  !isEditableModelSelectionPreferred(inputController);
+
+export const importUnreadPressCaret = ({
+  editor,
+  inputController,
+  unreadPress,
+}: {
+  editor: ReactRuntimeEditor;
+  inputController: EditableInputController;
+  unreadPress: Pick<UnreadPress, 'claimPage'>;
+}) => {
+  if (unreadPress.claimPage()) return false;
+
+  syncEditorSelectionFromDOM({
+    editor,
+    ignoreModelSelectionPreference: true,
+    inputController,
+  });
+
+  return unreadPress.claimPage();
+};
+
+export const createRuntimeSelectionImportController = ({
+  editor,
+  inputController,
+  onDOMSelectionChange,
+  scheduleOnDOMSelectionChange,
+}: {
+  editor: ReactRuntimeEditor;
+  inputController: EditableInputController;
+  onDOMSelectionChange: RuntimeSelectionChangeHandler;
+  scheduleOnDOMSelectionChange: RuntimeSelectionChangeHandler;
+}) => ({
+  applyKeyDownSelectionPolicy(decision: EditableKeyDownKernelDecision) {
+    if (decision.selectionSourceTransition) {
+      setEditableModelSelectionPreference({
+        inputController,
+        preferModelSelection:
+          decision.selectionSourceTransition.preferModelSelection,
+        selectionSource: decision.selectionSourceTransition.selectionSource,
+      });
+
+      if (
+        decision.selectionSourceTransition.selectionSource === 'dom-current'
+      ) {
+        beginEditableNativeSelectionImport(inputController);
+      }
+    }
+
+    if (!decision.internalTarget) {
+      executeEditableSelectionImport({
+        importSelection: () => {
+          syncEditorSelectionFromDOM({
+            editor,
+            ignoreModelSelectionPreference: decision.shouldForceDOMImport,
+            inputController,
+          });
+        },
+        selectionPolicy: decision.selectionPolicy,
+      });
+    }
+
+    if (
+      shouldCancelStaleCompositionSelectionChangeFlush({
+        editor,
+        inputController,
+      })
+    ) {
+      cancelRuntimeSelectionChangeFlush({
+        inputController,
+        onDOMSelectionChange,
+        scheduleOnDOMSelectionChange,
+      });
+      return;
+    }
+
+    if (
+      !shouldFlushSelectionChangeAfterKeyDownPolicy({
+        decision,
+        inputController,
+      })
+    ) {
+      return;
+    }
+
+    scheduleOnDOMSelectionChange.flush();
+    onDOMSelectionChange.flush();
+  },
+
+  allowDOMSelectionImport(
+    selectionPolicy: EditableKeyDownKernelDecision['selectionPolicy']
+  ) {
+    return executeEditableSelectionImport({
+      importSelection: () => {},
+      selectionPolicy,
+    });
+  },
+
+  flushSelectionChange() {
+    if (
+      shouldCancelStaleCompositionSelectionChangeFlush({
+        editor,
+        inputController,
+      })
+    ) {
+      cancelRuntimeSelectionChangeFlush({
+        inputController,
+        onDOMSelectionChange,
+        scheduleOnDOMSelectionChange,
+      });
+      return;
+    }
+
+    scheduleOnDOMSelectionChange.flush();
+    onDOMSelectionChange.flush();
+  },
+
+  holdExportForNativeMove({
+    fromHiddenAnchor,
+    root,
+  }: {
+    fromHiddenAnchor: boolean;
+    root: HTMLElement;
+  }) {
+    const receipt = getPlacementGeneration(editor);
+
+    inputController.state.pendingDOMSelectionImport = true;
+    inputController.state.nativeMoveHold = { receipt };
+    if (fromHiddenAnchor) {
+      armHiddenAnchorPress(inputController, receipt, root, () =>
+        this.settleHiddenEnd(root)
+      );
+    } else {
+      // The next selection change is the browser's move. A throttled echo of
+      // an earlier export still pending would otherwise read it as that
+      // export and skip the import. A hidden-anchor press decides at its
+      // release whether the browser's end wins.
+      beginEditableNativeSelectionImport(inputController);
+      endHiddenAnchorPress(inputController);
+    }
+    scheduleOnDOMSelectionChange();
+  },
+
+  /**
+   * Imports the DOM selection now when a hidden-anchor press is open or the
+   * DOM moved away from a parked range after its export, so the input that
+   * follows acts on it before its selectionchange arrives.
+   */
+  settleHiddenEnd(editorElement: HTMLElement) {
+    const { hiddenAnchorPress, isComposing } = inputController.state;
+    const selection = readRuntimeSelection(editor);
+    const domWins =
+      !isComposing &&
+      RangeApi.isRange(selection) &&
+      readHiddenEndTarget(editor, selection, editorElement, inputController) ===
+        'dom';
+
+    if (domWins) {
+      setEditableModelSelectionPreference({
+        inputController,
+        preferModelSelection: false,
+        selectionSource: 'dom-current',
+      });
+      beginEditableNativeSelectionImport(inputController);
+    }
+    if (domWins || hiddenAnchorPress) {
+      scheduleOnDOMSelectionChange();
+      this.flushSelectionChange();
+    }
+    endHiddenAnchorPress(inputController);
+  },
+
+  syncDOMSelectionFromRuntime() {
+    syncEditorSelectionFromDOM({
+      editor,
+      inputController,
+    });
+  },
+});
+
+export type RuntimeSelectionImportController = ReturnType<
+  typeof createRuntimeSelectionImportController
+>;

@@ -1,0 +1,25 @@
+---
+title: Local Docs
+description: Point coding agents at the Plate docs that ship with your installed version.
+---
+
+Every `platejs` release ships its documentation as Markdown in
+`node_modules/platejs/dist/docs/`. These files match the installed version, so
+a coding agent reads the API your app uses instead of the one it remembers.
+
+## Point your agent at the docs
+
+Add this block to your app's `AGENTS.md`, or to the rules file your coding tool
+reads:
+
+```md prompt
+This app uses Plate (`platejs`), whose API differs from older versions you
+may remember. Before you write editor code, read
+`node_modules/platejs/dist/docs/llms.txt` and the pages it lists. They match
+the installed version.
+```
+
+`llms.txt` names the installed version and lists every page with its
+description. A `/docs/<path>` link inside a page is the file `<path>.md` in
+`node_modules/platejs/dist/docs/` when `llms.txt` lists it. In a monorepo,
+point the block at the `node_modules` folder your app resolves `platejs` from.

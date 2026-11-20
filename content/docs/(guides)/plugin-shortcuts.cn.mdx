@@ -1,0 +1,334 @@
+---
+title: 插件快捷键
+description: 配置 Plate 插件的键盘快捷键。
+---
+
+插件快捷键把按键组合映射到插件方法或显式处理函数。Plate 在插件设置阶段把它们编译为一个不可变的有序表，每个可编辑根节点只安装一个分发器。
+
+## 快捷键解析规则
+
+当按键事件报告 `isComposing`，或带有 keyCode `229`（WebKit 为确认输入法组合的 Enter 发送的代码）时，Plate 不运行任何快捷键。插件的 `onKeyDown` 处理函数仍会收到该事件。
+
+每个插件拥有一个 `shortcuts` 对象。Plate 使用 `${plugin.name}.${shortcutName}` 作为编译后的快捷键标识。
+
+没有 `handler` 时，Plate 查找同名的公开方法：
+
+1. 只有一个更新方法：自动使用 `update`。
+2. 只有一个 API 方法：自动使用 `api`。
+3. 两者都存在：必须设置 `target: 'update' | 'api'`。
+4. 两者都不存在：插件编译会报告无效快捷键。
+
+显式 `target` 必须指向存在的方法。自定义 `handler` 自己负责分发，因此不能同时设置 `target`。
+
+请在被链接的方法之后声明无 `handler` 的快捷键。TypeScript 根据当前插件描述符已经
+携带的能力进行验证，所以 constructor 中的 `update` 或 `api` 贡献应位于
+`.extend({ shortcuts })` 之前。这个真实类型依赖正是示例使用后续阶段的原因。
+自定义处理函数不需要同名方法。
+
+| 字段 | 含义 |
+| --- | --- |
+| `keys` | 由 Plate 的跨 realm 匹配器编译的按键组合，例如 `'mod+b'`；多个组合用数组，例如 `['mod+b', 'ctrl+b']`。 |
+| `handler` | 接收 `{ editor, event }` 的显式处理函数。 |
+| `target` | 同名更新方法和 API 方法同时存在时，用 `'update'` 或 `'api'` 消除歧义。 |
+| `priority` | 快捷键的局部优先级；默认为 `0`。 |
+| `null` | 删除这个命名快捷键。 |
+
+与 `mod` 一起绑定的单个数字，会匹配该数字在美式键盘布局下的按键，无论 Shift 或键盘布局让它输出什么字符。所以在 Windows 上，Shift 让该键报告 `)` 时 `mod+shift+0` 仍会触发；在法语键盘上，该键报告 `&` 时 `mod+1` 也会触发。在 Windows 和 Linux 上 `mod` 是 Control，加上 `alt` 的绑定只在该键输出这个数字时匹配。Windows 把 Control 加 Alt 当作 AltGr，而 AltGr 在许多布局上会输出字符。要按按键位置绑定、不管它输出什么字符，就写它的 code，例如 `mod+alt+digit1`。
+
+## 链接更新方法
+
+快捷键名称与插件 update method 名称相同时，可以直接链接：
+
+```tsx title="plugins/signature-plugin.tsx" showLineNumbers
+import { definePlugin } from 'platejs/react';
+
+export const SignaturePlugin = definePlugin('signature', {
+  update: ({ tx }) => ({
+    insertSignature: () => {
+      tx.text.insert(' - EditorRoot');
+    },
+  }),
+})
+  .extend({
+    shortcuts: {
+      insertSignature: {
+        keys: 'mod+shift+s',
+      },
+    },
+  });
+```
+
+按下 `Mod+Shift+S` 会运行 `editor.update((tx) => tx.signature.insertSignature())`。
+
+## 链接 API 方法
+
+只有同名 API 方法存在时，Plate 自动使用 API 路径：
+
+```tsx title="plugins/inspect-plugin.tsx" showLineNumbers
+import { definePlugin } from 'platejs/react';
+
+export const InspectPlugin = definePlugin('inspect', {
+  api: ({ editor }) => ({
+    logText: () => {
+      editor.api.debug.info('Editor text', editor.read.text.string([]));
+    },
+  }),
+})
+  .extend({
+    shortcuts: {
+      logText: {
+        keys: 'mod+alt+l',
+      },
+    },
+  });
+```
+
+按下 `Mod+Alt+L` 会调用 `editor.api.inspect.logText()`。
+
+<Callout type="info" title="消除同名方法歧义">
+  Update method 和 API method 同名时，设置 `target: 'update'` 或
+  `target: 'api'`。每个插件只有一个 API group；`editor.api.inspect` 和
+  `editor.plugin(InspectPlugin).api` 是同一个 immutable object 的两个 typed
+  access path。
+</Callout>
+
+## 自定义处理函数
+
+需要键盘事件、自定义分支或不适合作为插件方法的行为时，使用 `handler`。不要同时设置 `target`。
+
+```tsx title="plugins/draft-plugin.tsx" showLineNumbers
+import { definePlugin } from 'platejs/react';
+
+export const DraftPlugin = definePlugin('draft', {
+  shortcuts: {
+    saveDraft: {
+      keys: 'mod+s',
+      handler: ({ editor }) => {
+        const text = editor.read.text.string([]);
+
+        if (text.trim().length === 0) return false;
+
+        editor.api.debug.info('Draft text', text);
+
+        return true;
+      },
+    },
+  },
+});
+```
+
+| 处理函数返回 | 行为 |
+| --- | --- |
+| `false` | 未处理。Plate 不修改事件，并尝试下一个匹配的快捷键。 |
+| 其他值 | 已处理。Plate 调用 `event.preventDefault()` 和 `event.stopPropagation()`，按键不会再到达其他按键处理函数。 |
+
+Plate 在 keydown 时运行快捷键。需要在 keyup 时执行的操作，请使用插件的 `on.keyUp` 处理函数。
+
+## 让浏览器处理按键
+
+已处理的快捷键总会阻止浏览器自身的行为，而第一个匹配且处理函数不返回 `false` 的快捷键会接管该按键。所以每个绑定该按键的插件都必须放行。要在每次按键时都保留浏览器的行为，把这些快捷键都设为 `null`。只想在某些位置保留时，用 `extend` 包装每个插件的处理函数，并在那里返回 `false`。
+
+```tsx title="plugins/indent-plugin.tsx" showLineNumbers
+import { IndentPlugin } from 'platejs/react';
+
+export const AppIndentPlugin = IndentPlugin.extend(({ plugin }) => ({
+  shortcuts: {
+    tab: {
+      keys: 'tab',
+      handler: (context) => {
+        const block = context.editor.read.nodes.block();
+
+        if (block?.[1][0] === 0) return false;
+
+        return plugin.shortcuts.tab?.handler?.(context);
+      },
+    },
+  },
+}));
+```
+
+当 `IndentPlugin` 是唯一绑定 Tab 的插件时，在第一个块中按 Tab 交给浏览器处理，在其他块中按 Tab 会缩进该块。其他插件也绑定 Tab，例如 `ListPlugin`、`TablePlugin` 和 `CodeBlockPlugin`，安装它们时请用同样的方式包装它们的 Tab 快捷键。链接到插件方法的快捷键没有可包装的处理函数，它的包装函数直接调用该方法。快捷键不能同时保留 `target` 和 `handler`，所以当它声明了 `target` 时（例如 `CopilotPlugin` 的 `accept`），把它设为 `null`，再用新名称声明包装快捷键。
+
+## 配置已有快捷键
+
+通过名称修改按键：
+
+```tsx title="plugins/basic-marks.tsx" showLineNumbers
+import { BoldPlugin } from 'platejs/react';
+
+export const AppBoldPlugin = BoldPlugin.configure({
+  shortcuts: {
+    toggle: {
+      keys: 'mod+shift+b',
+    },
+  },
+});
+```
+
+配置后的快捷键保留你未写出的字段。
+
+将快捷键设为 `null` 可删除它：
+
+```tsx title="plugins/basic-marks.tsx" showLineNumbers
+import { ItalicPlugin } from 'platejs/react';
+
+export const AppItalicPlugin = ItalicPlugin.configure({
+  shortcuts: {
+    toggle: null,
+  },
+});
+```
+
+## 在界面中显示快捷键
+
+从 `editor.plugin(plugin).shortcuts` 读取插件的按键，不要再写一遍，这样重新绑定的快捷键会更新标签，删除的快捷键不再显示。`platejs/dom` 中的 `ariaKeyShortcuts` 把按键转换为 `aria-keyshortcuts` 属性的值，例如 `Control+Shift+X`，并且只命名编辑器匹配器在美式键盘布局下能匹配的组合键。
+
+```tsx title="components/bold-button.tsx" showLineNumbers
+'use client';
+
+import { ariaKeyShortcuts, usesAppleDOMHotkeys } from 'platejs/dom';
+import { BoldPlugin, useEditor } from 'platejs/react';
+import * as React from 'react';
+
+export function BoldButton() {
+  const editor = useEditor();
+  const bold = editor.plugin(BoldPlugin);
+  const keys = bold.installed ? bold.shortcuts.toggle?.keys : undefined;
+  const [platform, setPlatform] = React.useState<'apple' | 'other'>();
+
+  React.useEffect(() => {
+    setPlatform(usesAppleDOMHotkeys(document) ? 'apple' : 'other');
+  }, []);
+
+  const shortcuts =
+    keys && platform ? ariaKeyShortcuts(keys, { platform }) : undefined;
+
+  return (
+    <button
+      type="button"
+      aria-keyshortcuts={shortcuts}
+      disabled={!bold.installed}
+      title={shortcuts ? `Bold (${shortcuts})` : 'Bold'}
+      onClick={() => bold.update.toggle()}
+    >
+      B
+    </button>
+  );
+}
+```
+
+只在 `installed` 为 true 时读取快捷键，因为读取编辑器未安装的插件的快捷键会抛出错误。服务端不知道用户的平台，所以标签要等到浏览器中的首次渲染之后才出现。当 `ariaKeyShortcuts` 无法命名任何组合键时返回 `undefined`，例如 `mod+shift+0`，它对应的字符取决于键盘布局。[`MarkToolbarButton`](/docs/components/mark-toolbar-button) 为每个标记按钮完成这些工作，并在 Apple 设备上把按键显示为 `⇧⌘X`。
+
+## 多个快捷键
+
+一个插件可以声明多个命名快捷键。每个名称应与要调用的方法一致。
+
+```tsx title="plugins/review-plugin.tsx" showLineNumbers
+import { definePlugin } from 'platejs/react';
+
+export const ReviewPlugin = definePlugin('review', {
+  update: ({ tx }) => ({
+    accept: () => tx.text.insert('Accepted'),
+    reject: () => tx.text.insert('Rejected'),
+  }),
+})
+  .extend({
+    shortcuts: {
+      accept: { keys: 'mod+alt+a' },
+      reject: { keys: 'mod+alt+r' },
+    },
+  });
+```
+
+编译后的标识分别是 `review.accept` 和 `review.reject`。
+
+## 优先级
+
+快捷键优先级默认为 `0`。多个处理函数使用相同按键时，可以为需要优先执行的快捷键设置更高的 `priority`。
+
+```tsx title="plugins/priority-plugin.tsx" showLineNumbers
+import { definePlugin } from 'platejs/react';
+
+export const PriorityPlugin = definePlugin('commandMenu', {
+  shortcuts: {
+    openCommandMenu: {
+      keys: 'mod+k',
+      priority: 200,
+      handler: ({ editor }) => {
+        editor.api.debug.info('Open command menu');
+
+        return true;
+      },
+    },
+  },
+});
+```
+
+Plate 按快捷键优先级、插件应用顺序、声明顺序排列编译表。第一个已处理的路径胜出。
+
+同一个按键上的数字和符号可能匹配同一次按键。在法语键盘上，Control 加 6 键报告 `-`，所以同时匹配 `mod+6` 和 `mod+-`。同时绑定两者的应用，应给符号快捷键设置更高的 `priority`。
+
+## 编辑器级快捷键
+
+不属于任何功能插件的编辑器级命令放在一个小的应用插件中。
+
+```tsx title="editor.ts" showLineNumbers
+import { DebugPlugin } from 'platejs';
+import { createEditor, definePlugin } from 'platejs/react';
+
+const WordCountPlugin = definePlugin('wordCount', {
+  shortcuts: {
+    reportWordCount: {
+      keys: 'mod+shift+c',
+      handler: ({ editor }) => {
+        const words = editor.read.text
+          .string([])
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+
+        editor
+          .plugin(DebugPlugin)
+          .api.info('Word count', undefined, words.length);
+
+        return true;
+      },
+    },
+  },
+});
+
+export const editor = createEditor({ plugins: [WordCountPlugin] });
+```
+
+编译后的标识是 `wordCount.reportWordCount`。
+
+## 默认快捷键
+
+| 插件 | 快捷键名称 | 按键 |
+| --- | --- | --- |
+| `BoldPlugin` | `toggle` | `Mod+B` |
+| `ItalicPlugin` | `toggle` | `Mod+I` |
+| `UnderlinePlugin` | `toggle` | `Mod+U` |
+| `ParagraphPlugin` | `toggle` | `Mod+Alt+0`、`Mod+Shift+0` |
+| `CopilotPlugin` | `accept` | `Tab` |
+| `CopilotPlugin` | `reject` | `Escape` |
+
+## API 参考
+
+```ts title="Shortcut 类型"
+type Shortcut = {
+  keys?: string | readonly string[];
+  priority?: number;
+} & (
+  | {
+      handler: (context: {
+        editor: Editor;
+        event: KeyboardEvent;
+      }) => boolean | void;
+      target?: never;
+    }
+  | { handler?: never; target?: 'api' | 'update' }
+);
+```
+
+`target` 与 `handler` 互斥。
